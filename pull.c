@@ -1,5 +1,6 @@
 #include "hookapi.h"
 #include <stdint.h>
+#define HAS_CALLBACK
 
 #define ASSERT(x)\
 {\
@@ -34,7 +35,6 @@ uint16_t current_month = 0;\
 
 /*
  * RH TODO: if a pull payment fails then decrement the used allowance so it can be retried
- *
 int64_t cbak(uint32_t w)
 {
     if (w != 1)
@@ -45,18 +45,21 @@ int64_t cbak(uint32_t w)
 
 
 }
-*/
+ */
+
 
 int64_t hook(uint32_t r)
 {
     _g(1,1);
+
+    etxn_reserve(1);
 
     uint8_t ttbuf[16];
     int64_t br = otxn_field(SBUF(ttbuf), sfTransactionType);
     uint32_t txntype = ((uint32_t)(ttbuf[0]) << 16U) + ((uint32_t)(ttbuf[1]));
 
     // pass anything that isn't a ttINVOKE
-    if (txntype != 98)
+    if (txntype != 99)
         DONE();
 
     // get the account id
@@ -65,10 +68,30 @@ int64_t hook(uint32_t r)
 
     uint8_t hook_accid[20];
     hook_account(SBUF(hook_accid));
-
+    
     // pass outgoing txns
+
+    int self_sent_txn = 0;
+
+    // if the account is the sender
     if (BUFFER_EQUAL_20(hook_accid, account_field))
-        DONE();
+    {
+        self_sent_txn = 1;
+
+        // ... and there is a destination set
+        uint8_t dest[20];
+        if (otxn_field(SBUF(dest), sfDestination) == 20)
+        {
+            // ... and the destination isnt the account
+            if (!BUFFER_EQUAL_20(hook_accid, dest))
+            {
+                // .. then they are invoking someone else's hook
+                // and we need to not interfere with that.
+                DONE();
+            }
+        }
+    }
+
 
     // hook has two modes: un/set and request
     // to set use hook parameter name=accountid, value=monthly authorized amount
@@ -89,6 +112,11 @@ int64_t hook(uint32_t r)
     if (params)
     {
         // set/unset mode
+       
+        // check permission first! 
+        ASSERT(self_sent_txn);
+
+        // slot the parameter k-v
         ASSERT(slot_subarray(2, 0, 4) == 4);
         ASSERT(slot_subfield(4, sfHookParameterName, 5)  == 5);
         ASSERT(slot_subfield(4, sfHookParameterValue, 6) == 6);
@@ -115,7 +143,7 @@ int64_t hook(uint32_t r)
         ASSERT(slot_set(SBUF(kl), 7) == 7);
 
         // it does, now check if the value is zero
-        if (*((uint64_t*)(k+1)) == 0)
+        if (*((uint64_t*)(v)) == 0)
         {
             // this is the unset operation
             ASSERT(state_set(0,0, k+1, 20) == 0);
@@ -170,8 +198,15 @@ int64_t hook(uint32_t r)
     
     int64_t after = already_requested + requested_amount;
 
-    // catch overflow
-    ASSERT(after > already_requested && after > requested_amount);
+    TRACEVAR(requested_amount);
+    TRACEVAR(already_requested_month);
+    TRACEVAR(already_requested);
+    TRACEVAR(allowance);
+    TRACEVAR(after);
+
+    // catch overflow, and zero drop request
+    ASSERT(after > already_requested);
+    ASSERT(after >= requested_amount);
 
     // catch overspend
     ASSERT(after <= allowance);
@@ -185,7 +220,10 @@ int64_t hook(uint32_t r)
     // emit the txn 
     uint8_t tx[PREPARE_PAYMENT_SIMPLE_SIZE];                                                                           
     PREPARE_PAYMENT_SIMPLE(tx, requested_amount, account_field, 0, 0);                                                     
-                                                                                                                       
+                        
+    TRACEHEX(tx);
+
+
     // emit the transaction                                                                                            
     uint8_t emithash[32];                                                                                              
     int64_t emit_result = emit(SBUF(emithash), SBUF(tx));                                                              
