@@ -72,27 +72,37 @@ int64_t hook(uint32_t r)
 
     ASSERT(slot(SBUF(buffer), 2) > 0);
 
-    // sfBlob is VL(type=7) field=26
-    // therefore its 2 lead-in bytes are: 70 1A
-    // it further has length encoding, and payload length can be up to 672 bytes
+    trace(SBUF("blob-buffer"), buffer, 676, 1);
 
-    uint64_t len = buffer[2];
-    uint8_t* ptr = buffer + 3;
+    uint16_t len = (uint16_t)buffer[0];
+    uint8_t* ptr = buffer + 1;
     if (len > 192)
     {
-        len = 193 + ((len - 193) * 256) + buffer[3];
+        len = 193 + ((len - 193) * 256) + ((uint16_t)(buffer[1]));
         ptr++;
     }
+
+//    TRACEVAR(len);
+//    TRACEVAR(buffer);
 
     uint8_t* end = ptr + len;
 
     // execution to here means it's a valid modification instruction
-    for (; ptr < end, GUARD(32); ptr += 21)
+    while (ptr < end)
     {
-        ASSERT(state_set(
-                    *ptr == 0 ? txn_id : 0, *ptr == 0 ? 32 : 0,
+        GUARD(32);
+//        TRACEVAR(ptr);
+//        TRACEVAR(end);
+//        TRACEVAR(first);
+
+        uint8_t* dptr = *ptr == 0 ? txn_id : 0;
+        uint64_t dlen = *ptr == 0 ? 32 : 0;
+        ASSERT((state_set(
+                    dptr, dlen,
                     ptr+1, 20
-                    ) == 32);
+                    ) == dlen);
+
+        ptr += 21;
     }
 
     DONE();
