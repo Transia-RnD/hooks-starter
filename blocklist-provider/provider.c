@@ -1,6 +1,5 @@
 #include "hookapi.h"
 #include <stdint.h>
-#define HAS_CALLBACK
 
 #define ASSERT(x)\
 {\
@@ -82,18 +81,12 @@ int64_t hook(uint32_t r)
         ptr++;
     }
 
-//    TRACEVAR(len);
-//    TRACEVAR(buffer);
-
     uint8_t* end = ptr + len;
 
     // execution to here means it's a valid modification instruction
     while (ptr < end)
     {
         GUARD(32);
-//        TRACEVAR(ptr);
-//        TRACEVAR(end);
-//        TRACEVAR(first);
 
         uint8_t* dptr = *ptr == 0 ? txn_id : 0;
         uint64_t dlen = *ptr == 0 ? 32 : 0;
