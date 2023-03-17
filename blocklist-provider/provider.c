@@ -37,25 +37,19 @@ int64_t hook(uint32_t r)
     uint8_t hook_accid[20];
     hook_account(SBUF(hook_accid));
     
-    // pass outgoing txns
+    // ignore anything that isn't a self invoke
+    if (!BUFFER_EQUAL_20(hook_accid, account_field))
+        DONE();
 
-    int self_sent_txn = 0;
-    // if the account is the sender
-    if (BUFFER_EQUAL_20(hook_accid, account_field))
+    // if there's a destination set
+    uint8_t dest[20];
+    if (otxn_field(SBUF(dest), sfDestination) == 20)
     {
-        self_sent_txn = 1;
-
-        // ... and there is a destination set
-        uint8_t dest[20];
-        if (otxn_field(SBUF(dest), sfDestination) == 20)
+        if (!BUFFER_EQUAL_20(hook_accid, dest))
         {
-            // ... and the destination isnt the account
-            if (!BUFFER_EQUAL_20(hook_accid, dest))
-            {
-                // .. then they are invoking someone else's hook
-                // and we need to not interfere with that.
-                DONE();
-            }
+            // .. then they are invoking someone else's hook
+            // and we need to not interfere with that.
+            DONE();
         }
     }
 
