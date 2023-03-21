@@ -2,29 +2,13 @@
 #include <stdint.h>
 #define HAS_CALLBACK
 
-#define ASSERT(x)\
-{\
-    if (!(x))\
-        rollback(0,0,__LINE__);\
-}
-
 #define DONE()\
     accept(0,0,__LINE__)
 
 /**
-    This hook is an omnibus hook that contains 4 different hooks' functionalities. Each of these
-    can be enabled or disabled and configured using the provided install-time hook parameter as
-    described below:
+    All integer values are marked for size and endianness
 
-    All integer values are little endian unless otherwise marked
-
-    1. High-Value Payment Hook
-        Parameter Name: 0x4844 ('HD')
-        Parameter Value: trigger threshold for outgoing xrp payments (xfl LE)
-        Parameter Name: 0x4854 ('HT')
-        Parameter Value: trigger threshold for outgoing trustline payments (xfl LE)
-
-    2. Savings Hook
+    Savings Hook
         Parameter Name: 0x53444F ('SDO')
         Parameter Value: <trigger threshold for outgoing xrp payments (uint64)><% as xfl LE>
         Parameter Name: 0x534449 ('SDI')
@@ -37,17 +21,18 @@
         Parameter Value: <20 byte AccountID of savins destination><4 byte dest tag BE>
 **/
 
-uint8_t txn[284 /* for trustline, and 244 for drops */] =
+uint8_t txn[283 /* for trustline, and 243 for drops */] =
 {
-/*   3 */       0x12U, 0x00U, 0x01U,                                /* tt = Payment */
+/*   3 */       0x12U, 0x00U, 0x00U,                                /* tt = Payment */
 /*   5 */       0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                  /* flags = tfCanonical */
 /*   5 */       0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                  /* sequence = 0 */
-/*   6 */       0x20U, 0x14U, 0x00U, 0x00U, 0x00U, 0x00U,           /* dtag, flipped */
-/*   6 */       0x20U, 0x26U, 0x00U, 0x00U, 0x00U, 0x00U,           /* first ledger seq */
-/*   6 */       0x20U, 0x27U, 0x00U, 0x00U, 0x00U, 0x00U            /* last ledger seq */
+/*   5 */       0x2EU, 0x00U, 0x00U, 0x00U, 0x00U,                  /* dtag, flipped */
+/*   6 */       0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,           /* first ledger seq */
+/*   6 */       0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U            /* last ledger seq */
                 /* rest must be populated in code because here the amount may be 8 or 48 */
 };
 
+uint8_t errmsg[] = "Savings: Threshold doesn't exist   ";
 
 
 int64_t hook(uint32_t r)
@@ -59,7 +44,8 @@ int64_t hook(uint32_t r)
 
     // get the account id
     uint8_t account_field[20];
-    ASSERT(otxn_field(SBUF(account_field), sfAccount) == 20);
+    if (otxn_field(SBUF(account_field), sfAccount) != 20)
+        accept(SBUF("Savings: Could not get account field!"), __LINE__);
 
     uint8_t hook_acc[20];
     hook_account(SBUF(hook_acc));
@@ -69,8 +55,11 @@ int64_t hook(uint32_t r)
     uint8_t ttbuf[16];
     otxn_field(SBUF(ttbuf), sfTransactionType);
     uint32_t tt = ((uint32_t)(ttbuf[0]) << 16U) + ((uint32_t)(ttbuf[1]));
-    uint64_t ttmask[4];
-    ttmask[tt / 8] = 1 << (tt % 8);
+
+    trace_num(SBUF("tt"), tt);
+
+    if (tt != 0)
+        accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
     // get flags
     uint32_t flags = 0;
@@ -89,132 +78,127 @@ int64_t hook(uint32_t r)
     {
         amount = slot_float(1);
         amount_native = slot_size(1) == 8;
-        ASSERT(otxn_field(SBUF(amount_buf), sfAmount) > 0);
+        if (otxn_field(SBUF(amount_buf), sfAmount) <= 0)
+            accept(SBUF("Savings: Could not get amount field."), __LINE__);
     }
 
 
     // partial payments not supported
     if (flags & 0x00020000UL)
-        return accept(SBUF("Savings: Passing partial payment"), __LINE__);
+        accept(SBUF("Savings: Passing partial payment"), __LINE__);
 
 
+    uint8_t param_name[3] = {0x53U, 0x41U, 0};
+    uint8_t savings_acc[24];
+    uint8_t kl[34];
+    if (hook_param(SBUF(savings_acc), param_name, 2) != 24)
+        accept(SBUF("Savings: No account set or wrong format"), __LINE__);
+
+    if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, savings_acc, 20, 0,0,0,0) != 34)
+        accept(SBUF("Savings: Could not generate keylet"), __LINE__);
+
+    if (slot_set(SBUF(kl), 2) != 2)
+        accept(SBUF("Savings: Dest account doesn't exist"), __LINE__);
+
+    // destination exists
+    param_name[1] = amount_native   ? 0x44U : 0x54U; // D / T
+    param_name[2] = outgoing        ? 0x4FU : 0x49U; // O / I
+
+    errmsg[33] = param_name[1];
+    errmsg[34] = param_name[2];
+
+
+    uint8_t threshold_raw[16];
+    if (hook_param(threshold_raw, 16, SBUF(param_name)) != 16)
+        accept(SBUF(errmsg), __LINE__); 
+           
+    if (float_compare(*((uint64_t*)threshold_raw), amount, COMPARE_LESS) == 1)
+        accept(SBUF("Savings: Threshold not met"), __LINE__); 
+
+    uint64_t threshold = *((uint64_t*)threshold_raw);
+    uint64_t percent =  *(((uint64_t*)(threshold_raw)) + 1);
+
+    trace_num(SBUF("threshold"), threshold);
+    trace_num(SBUF("percent"), percent);
+
+    int64_t tosend_xfl =
+        float_multiply(amount, percent);
+
+    if (tosend_xfl <= 0)
+        accept(SBUF("Savings: Skipping 0 / invalid send."), __LINE__);
+
+    // savings thrshold met
+    etxn_reserve(1);
+
+    if (!amount_native)
     {
-        uint8_t param_name[3] = {0x53U, 0x41U, 0};
-        uint8_t savings_acc[24];
-        uint8_t kl[34];
-        if (hook_param(SBUF(savings_acc), param_name, 2) == 24)
-        do
-        {
-            GUARD(1);
+        // check if destination has a trustline for the currency
 
-            ASSERT(util_keylet(SBUF(kl), KEYLET_ACCOUNT, savings_acc, 20, 0,0,0,0) == 34);
+        // first generate the keylet
+        if (
+            util_keylet(SBUF(kl), KEYLET_LINE,
+                SBUF(savings_acc),
+                amount + 28, 20,         /* issuer */
+                amount +  8, 20) != 34   /* currency code */
+        ||
+        // then check it on the ledger
+        slot_set(SBUF(kl), 3) != 3)
+            accept(SBUF("Savings: Trustline missing on dest account"), __LINE__);
 
-            if (slot_set(SBUF(kl), 2) != 2)
-                break;
+    }
 
-            // destination exists
-            param_name[1] = amount_native   ? 0x44U : 0x54U; // D / T
-            param_name[2] = outgoing        ? 0x4FU : 0x49U; // O / I
-
-            uint8_t threshold_raw[10];
-            if (!(hook_param(threshold_raw, 10, SBUF(param_name)) == 10 &&
-                float_compare(*((uint64_t*)threshold_raw), amount, COMPARE_LESS) == 1))
-                break;
-
-            uint64_t threshold = *((uint64_t*)threshold_raw);
-            uint64_t percent =  *(((uint64_t*)(threshold_raw)) + 1);
-
-            int64_t tosend_xfl =
-                float_multiply(amount, percent);
-
-            ASSERT(tosend_xfl >= 0);
-
-            if (tosend_xfl == 0)
-                break;
-
-            // savings thrshold met
-            etxn_reserve(1);
-
-            if (!amount_native)
-            {
-                // check if destination has a trustline for the currency
-
-                // first generate the keylet
-                ASSERT(
-                    util_keylet(SBUF(kl), KEYLET_LINE,
-                        SBUF(savings_acc),
-                        amount + 28, 20,         /* issuer */
-                        amount +  8, 20) == 34); /* currency code */
-
-                // then check it on the ledger
-                if (slot_set(SBUF(kl), 3) != 3)
-                    break;
-
-            }
-
-            // prepare the payment
+    // prepare the payment
 
 #define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
-                                    ((n & 0xFF00U) << 8U) | \
-                                    ((n & 0xFF0000U) >> 8U) | \
-                                    ((n & 0xFF000000U) >> 24U)));
+                            ((n & 0xFF00U) << 8U) | \
+                            ((n & 0xFF0000U) >> 8U) | \
+                            ((n & 0xFF000000U) >> 24U)));
 
-            uint32_t fls = (uint32_t)ledger_seq() + 1;
-            uint32_t lls = fls + 4 ;
-            uint64_t txn_size = amount_native ? 244 : 284;
+    uint32_t fls = (uint32_t)ledger_seq() + 1;
+    uint32_t lls = fls + 4 ;
+    uint64_t txn_size = amount_native ? 243 : 283;
 
-            // dest tag
-            *((uint32_t*)(txn + 15)) = *((uint32_t*)(savings_acc + 20));
+    // dest tag
+    *((uint32_t*)(txn + 14)) = *((uint32_t*)(savings_acc + 20));
 
-            // fls
-            *((uint32_t*)(txn + 19)) = FLIP_ENDIAN(fls);
+    // fls
+    *((uint32_t*)(txn + 20)) = FLIP_ENDIAN(fls);
 
-            // lls
-            *((uint32_t*)(txn + 32)) = FLIP_ENDIAN(lls);
+    // lls
+    *((uint32_t*)(txn + 26)) = FLIP_ENDIAN(lls);
 
 
 /*  49 */
 /*or 9 */
-            uint8_t* upto = txn + 31;
-            if (amount_native)
-            {
-                uint64_t drops = float_int(tosend_xfl, 6, 1);
-                _06_01_ENCODE_DROPS_AMOUNT(upto, drops);
-            }
-            else
-            {
-                ASSERT(float_sto(upto, 48, amount_buf + 28, 20, amount_buf + 8, 20, tosend_xfl, sfAmount) == 49);
-                upto += 49;
-            }
-            uint8_t* fee_ptr = upto;
+    uint8_t* upto = txn + 30;
+    if (amount_native)
+    {
+        uint64_t drops = float_int(tosend_xfl, 6, 1);
+        _06_01_ENCODE_DROPS_AMOUNT(upto, drops);
+    }
+    else
+    {
+        if (float_sto(upto, 48, amount_buf + 28, 20, amount_buf + 8, 20, tosend_xfl, sfAmount) != 49)
+            accept(SBUF("Savings: Generating amount failed"), __LINE__);
+        upto += 49;
+    }
+    uint8_t* fee_ptr = upto;
 /*   9 */   _06_08_ENCODE_DROPS_FEE (upto, 0);
 /*  35 */   _07_03_ENCODE_SIGNING_PUBKEY_NULL(upto);
 /*  22 */   _08_01_ENCODE_ACCOUNT_SRC(upto, hook_acc);
 /*  22 */   _08_03_ENCODE_ACCOUNT_DST(upto, savings_acc);
 /* 116 */
-            int64_t edlen = etxn_details((uint32_t)upto, txn_size);
-            int64_t fee = etxn_fee_base(txn, txn_size);
-            _06_08_ENCODE_DROPS_FEE(fee_ptr, fee);
+    int64_t edlen = etxn_details((uint32_t)upto, txn_size);
+    int64_t fee = etxn_fee_base(txn, txn_size);
+    _06_08_ENCODE_DROPS_FEE(fee_ptr, fee);
 
-            trace(SBUF("savings txn"), txn, txn_size, 1);
-
-            // emit the transaction
-            uint8_t emithash[32];
-            int64_t emit_result = emit(SBUF(emithash), txn, txn_size);
-            ASSERT(emit_result > 0);
-
-            trace(SBUF("savings hash"), SBUF(emithash), 1);
-
-        } while (0);
-
-    }
-
-    // HV-Payment
-    {
-
-    }
-
-
-    accept(0,0,0);
+    // emit the transaction
+    uint8_t emithash[32];
+    int64_t emit_result = emit(SBUF(emithash), txn, txn_size);
+    if (emit_result > 0)
+        accept(SBUF("Savings: Successfully emitted"), __LINE__);
+   
+    trace(SBUF("txnraw"), txn, txn_size, 1); 
+    return accept(SBUF("Savings: Emit unsuccessful"), __LINE__);
 }
 
