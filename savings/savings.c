@@ -67,12 +67,6 @@ int64_t hook(uint32_t r)
 {
     _g(1,1);
 
-    if (r == 0)
-    {
-        hook_again();
-        accept(SBUF("Savings: requesting weak execution."), __LINE__);
-    }
-
     if (otxn_type() != 0)
         accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
@@ -88,6 +82,10 @@ int64_t hook(uint32_t r)
 
     uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, account_field);
 
+    uint8_t dest_account[20];
+    if (otxn_field(SBUF(dest_account), sfDestination) != 20)
+        accept(SBUF("Savings: No destination"), __LINE__);
+
     // get flags
     uint32_t flags = 0;
     {
@@ -95,32 +93,56 @@ int64_t hook(uint32_t r)
         otxn_field(SBUF(flagbuf), sfFlags);
         flags = UINT32_FROM_BUF(flagbuf);
     }
-
+   
     // get the relevant amount, if any
-    int64_t amount = -1;
     int64_t amount_native = 0;
     uint8_t amount_buf[48];
     otxn_slot(1);
-    if (slot_subfield(1, sfAmount, 1) == 1)
-    {
-        amount = slot_float(1);
-        amount_native = slot_size(1) == 8;
-        if (otxn_field(SBUF(amount_buf), sfAmount) <= 0)
-            accept(SBUF("Savings: Could not get amount field."), __LINE__);
-    }
 
-    meta_slot(4);
-    if (slot_subfield(4, sfDeliveredAmount, 4) == 4)
+    // only use sendmax as the target currency if it's an outgoing payment and sendmax is present, otherwise use amt
+    if (!(outgoing && slot_subfield(1, sfSendMax, 10) == 10))
+        slot_subfield(1, sfAmount, 10);
+
+    amount_native = slot_size(10) == 8;
+    if (slot(SBUF(amount_buf), 10) <= 0)
+        accept(SBUF("Savings: Could not get amount"), __LINE__);
+
+    int64_t balance, prior_balance;
+
+    // we need to check balance mutation before and after successful application of the payment txn
+    // we do that by getting the balance of the relevant currency and saving it in ephemeral state
     {
-        // has delivered amount
-        // RH UPTO
+        uint8_t balkl[34];
+        if (amount_native)
+            util_keylet(SBUF(balkl), KEYLET_ACCOUNT, HOOK_ACC, 20, 0,0,0,0);
+        else
+            util_keylet(SBUF(balkl), KEYLET_LINE, otxn_account, 20, dest_account, 20, amount_buf + 28, 20);
+
+        if (slot_set(SBUF(balkl), 20) != 20 || slot_subfield(20, sfBalance, 20) != 20)
+            accept(SBUF("Savings: Could not load target balance"), __LINE__);
+
+        balance = slot_float(20);
     }
     
+    uint8_t key;
+    if (r == 0)
+    {
+        hook_again();
+        // we'll store this for the weak execution
+        state_set(&balance, sizeof(balance), &key, 1);
+        accept(SBUF("Savings: requesting weak execution."), __LINE__);
+    }
+    else
+    {
+        // load the amount before exeuction
+        state(&prior_balance, sizeof(prior_balance), &key, 1);
+        state_set(0,0, &key, 1);
+    }
 
-    // partial payments not supported
-    if (flags & 0x00020000UL)
-        accept(SBUF("Savings: Passing partial payment"), __LINE__);
-
+    // compute and normalize mutation
+    int64_t amount = float_sum(float_negate(balance), prior_balance);
+    if (float_compare(amount, 0, COMPARE_LESS) == 1)
+        amount = float_negate(amount);
 
     uint8_t param_name[3] = {0x53U, 0x41U, 0};
     uint8_t kl[34];
@@ -173,8 +195,8 @@ int64_t hook(uint32_t r)
         if (
             util_keylet(SBUF(kl), KEYLET_LINE,
                 SAVINGS_ACC, 20,
-                amount + 28, 20,         /* issuer */
-                amount +  8, 20) != 34   /* currency code */
+                amount_buf + 28, 20,         /* issuer */
+                amount_buf +  8, 20) != 34   /* currency code */
         ||
         // then check it on the ledger
         slot_set(SBUF(kl), 3) != 3)
