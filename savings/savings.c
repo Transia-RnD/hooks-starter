@@ -18,26 +18,63 @@
         Parameter Name: 0x535449 ('STI')
         Parameter Value: <trigger threshold for incoming trustline payments (xfl)><% as xfl LE>
         Parameter Name: 0x5341 ('SA')
-        Parameter Value: <20 byte AccountID of savins destination><4 byte dest tag BE>
+        Parameter Value: <20 byte AccountID of savins destination>
+        Parameter Name: 0x5344 ('SD')
+        Parameter Value: <4 byte dest tag BE>
 **/
 
-uint8_t txn[283 /* for trustline, and 243 for drops */] =
+#define DEBUG 0
+
+uint8_t txn[283] =
 {
-/*   3 */       0x12U, 0x00U, 0x00U,                                /* tt = Payment */
-/*   5 */       0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                  /* flags = tfCanonical */
-/*   5 */       0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                  /* sequence = 0 */
-/*   5 */       0x2EU, 0x00U, 0x00U, 0x00U, 0x00U,                  /* dtag, flipped */
-/*   6 */       0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,           /* first ledger seq */
-/*   6 */       0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U            /* last ledger seq */
-                /* rest must be populated in code because here the amount may be 8 or 48 */
+/* size,upto */
+/*   3,  0 */       0x12U, 0x00U, 0x00U,                                /* tt = Payment */
+/*   5,  3*/       0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                   /* flags = tfCanonical */
+/*   5,  8 */       0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                  /* sequence = 0 */
+/*   5, 13 */       0x99U, 0x99U, 0x99U, 0x99U, 0x99U,                  /* dtag, flipped */
+/*   6, 18 */       0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,           /* first ledger seq */
+/*   6, 24 */       0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,           /* last ledger seq */
+/*  49, 30 */   0x61U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, /* amount field 9 or 49 bytes */
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99,
+/*   9, 79 */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,                      /* fee      */
+/*  35, 88 */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,    /* pubkey   */
+/*  22,123 */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                            /* src acc  */
+/*  22,145 */   0x83U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                            /* dst acc  */
+/* 116,167 */   /* emit details */
+/*   0,283 */
 };
+
+#define FLS_OUT (txn + 20U)
+#define LLS_OUT (txn + 26U)
+#define DTAG_OUT (txn + 14U)
+#define AMOUNT_OUT (txn + 30U)
+#define HOOK_ACC (txn + 125U)
+#define SAVINGS_ACC (txn + 147U)
+#define EMIT_OUT (txn + 167U)
+#define FEE_OUT (txn + 80U)
 
 uint8_t errmsg[] = "Savings: Threshold doesn't exist   ";
 
+//
+// RH TODO: partial payments via AAW
+//
 
 int64_t hook(uint32_t r)
 {
     _g(1,1);
+
+    if (r == 0)
+    {
+        hook_again();
+        accept(SBUF("Savings: requesting weak execution."), __LINE__);
+    }
+
+    if (otxn_type() != 0)
+        accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
     uint8_t otxn_account[20];
     otxn_field(SBUF(otxn_account), sfAccount);
@@ -47,19 +84,9 @@ int64_t hook(uint32_t r)
     if (otxn_field(SBUF(account_field), sfAccount) != 20)
         accept(SBUF("Savings: Could not get account field!"), __LINE__);
 
-    uint8_t hook_acc[20];
-    hook_account(SBUF(hook_acc));
+    hook_account(HOOK_ACC, 20);
 
-    uint8_t outgoing = BUFFER_EQUAL_20(hook_acc, account_field);
-
-    uint8_t ttbuf[16];
-    otxn_field(SBUF(ttbuf), sfTransactionType);
-    uint32_t tt = ((uint32_t)(ttbuf[0]) << 16U) + ((uint32_t)(ttbuf[1]));
-
-    trace_num(SBUF("tt"), tt);
-
-    if (tt != 0)
-        accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
+    uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, account_field);
 
     // get flags
     uint32_t flags = 0;
@@ -82,6 +109,13 @@ int64_t hook(uint32_t r)
             accept(SBUF("Savings: Could not get amount field."), __LINE__);
     }
 
+    meta_slot(4);
+    if (slot_subfield(4, sfDeliveredAmount, 4) == 4)
+    {
+        // has delivered amount
+        // RH UPTO
+    }
+    
 
     // partial payments not supported
     if (flags & 0x00020000UL)
@@ -89,12 +123,11 @@ int64_t hook(uint32_t r)
 
 
     uint8_t param_name[3] = {0x53U, 0x41U, 0};
-    uint8_t savings_acc[24];
     uint8_t kl[34];
-    if (hook_param(SBUF(savings_acc), param_name, 2) != 24)
-        accept(SBUF("Savings: No account set or wrong format"), __LINE__);
+    if (hook_param(SAVINGS_ACC, 20, param_name, 2) != 20)
+        accept(SBUF("Savings: No account set"), __LINE__);
 
-    if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, savings_acc, 20, 0,0,0,0) != 34)
+    if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, SAVINGS_ACC, 20, 0,0,0,0) != 34)
         accept(SBUF("Savings: Could not generate keylet"), __LINE__);
 
     if (slot_set(SBUF(kl), 2) != 2)
@@ -107,7 +140,6 @@ int64_t hook(uint32_t r)
     errmsg[33] = param_name[1];
     errmsg[34] = param_name[2];
 
-
     uint8_t threshold_raw[16];
     if (hook_param(threshold_raw, 16, SBUF(param_name)) != 16)
         accept(SBUF(errmsg), __LINE__); 
@@ -118,8 +150,11 @@ int64_t hook(uint32_t r)
     uint64_t threshold = *((uint64_t*)threshold_raw);
     uint64_t percent =  *(((uint64_t*)(threshold_raw)) + 1);
 
-    trace_num(SBUF("threshold"), threshold);
-    trace_num(SBUF("percent"), percent);
+    if (DEBUG)
+    {
+        trace_num(SBUF("threshold"), threshold);
+        trace_num(SBUF("percent"), percent);
+    }
 
     int64_t tosend_xfl =
         float_multiply(amount, percent);
@@ -137,7 +172,7 @@ int64_t hook(uint32_t r)
         // first generate the keylet
         if (
             util_keylet(SBUF(kl), KEYLET_LINE,
-                SBUF(savings_acc),
+                SAVINGS_ACC, 20,
                 amount + 28, 20,         /* issuer */
                 amount +  8, 20) != 34   /* currency code */
         ||
@@ -156,49 +191,68 @@ int64_t hook(uint32_t r)
 
     uint32_t fls = (uint32_t)ledger_seq() + 1;
     uint32_t lls = fls + 4 ;
-    uint64_t txn_size = amount_native ? 243 : 283;
-
-    // dest tag
-    *((uint32_t*)(txn + 14)) = *((uint32_t*)(savings_acc + 20));
 
     // fls
-    *((uint32_t*)(txn + 20)) = FLIP_ENDIAN(fls);
+    *((uint32_t*)(FLS_OUT)) = FLIP_ENDIAN(fls);
 
     // lls
-    *((uint32_t*)(txn + 26)) = FLIP_ENDIAN(lls);
+    *((uint32_t*)(LLS_OUT)) = FLIP_ENDIAN(lls);
 
+    // if they specified a destination tag then fill it
+    param_name[1] = 'D';
+    if (hook_param(DTAG_OUT, 4, param_name, 2) == 4)
+        *(DTAG_OUT-1) = 0x2EU;
+        
 
 /*  49 */
 /*or 9 */
-    uint8_t* upto = txn + 30;
     if (amount_native)
     {
         uint64_t drops = float_int(tosend_xfl, 6, 1);
-        _06_01_ENCODE_DROPS_AMOUNT(upto, drops);
+        uint8_t* b = AMOUNT_OUT + 1;
+        *b++ = 0b01000000 + (( drops >> 56 ) & 0b00111111 );                                                   
+        *b++ = (drops >> 48) & 0xFFU;                                                                          
+        *b++ = (drops >> 40) & 0xFFU;                                                                          
+        *b++ = (drops >> 32) & 0xFFU;                                                                          
+        *b++ = (drops >> 24) & 0xFFU;                                                                          
+        *b++ = (drops >> 16) & 0xFFU;                                                                          
+        *b++ = (drops >>  8) & 0xFFU;                                                                          
+        *b++ = (drops >>  0) & 0xFFU;            
     }
     else
     {
-        if (float_sto(upto, 48, amount_buf + 28, 20, amount_buf + 8, 20, tosend_xfl, sfAmount) != 49)
+        if (float_sto(AMOUNT_OUT, 49, amount_buf + 28, 20, amount_buf + 8, 20, tosend_xfl, sfAmount) != 49)
             accept(SBUF("Savings: Generating amount failed"), __LINE__);
-        upto += 49;
     }
-    uint8_t* fee_ptr = upto;
-/*   9 */   _06_08_ENCODE_DROPS_FEE (upto, 0);
-/*  35 */   _07_03_ENCODE_SIGNING_PUBKEY_NULL(upto);
-/*  22 */   _08_01_ENCODE_ACCOUNT_SRC(upto, hook_acc);
-/*  22 */   _08_03_ENCODE_ACCOUNT_DST(upto, savings_acc);
-/* 116 */
-    int64_t edlen = etxn_details((uint32_t)upto, txn_size);
-    int64_t fee = etxn_fee_base(txn, txn_size);
-    _06_08_ENCODE_DROPS_FEE(fee_ptr, fee);
+    
+    etxn_details(EMIT_OUT, 116U);
+
+    // fee
+    {
+        int64_t fee = etxn_fee_base(SBUF(txn));
+        if (DEBUG)
+            TRACEVAR(fee);
+        uint8_t* b = FEE_OUT;
+        *b++ = 0b01000000 + (( fee >> 56 ) & 0b00111111 );                                                   
+        *b++ = (fee >> 48) & 0xFFU;                                                                          
+        *b++ = (fee >> 40) & 0xFFU;                                                                          
+        *b++ = (fee >> 32) & 0xFFU;                                                                          
+        *b++ = (fee >> 24) & 0xFFU;                                                                          
+        *b++ = (fee >> 16) & 0xFFU;                                                                          
+        *b++ = (fee >>  8) & 0xFFU;                                                                          
+        *b++ = (fee >>  0) & 0xFFU;            
+    }
+
 
     // emit the transaction
+    
     uint8_t emithash[32];
-    int64_t emit_result = emit(SBUF(emithash), txn, txn_size);
+    int64_t emit_result = emit(SBUF(emithash), SBUF(txn));
     if (emit_result > 0)
         accept(SBUF("Savings: Successfully emitted"), __LINE__);
    
-    trace(SBUF("txnraw"), txn, txn_size, 1); 
+    if (DEBUG)
+        trace(SBUF("txnraw"), SBUF(txn), 1); 
     return accept(SBUF("Savings: Emit unsuccessful"), __LINE__);
 }
 
