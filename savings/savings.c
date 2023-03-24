@@ -112,16 +112,34 @@ int64_t hook(uint32_t r)
     // we need to check balance mutation before and after successful application of the payment txn
     // we do that by getting the balance of the relevant currency and saving it in ephemeral state
     {
+
+        if (DEBUG)
+        {
+            TRACEHEX(otxn_account);
+            TRACEHEX(dest_account);
+            TRACEHEX(amount_buf);
+            trace(SBUF("currency"), amount_buf + 8, 20, 1);
+        }
         uint8_t balkl[34];
         if (amount_native)
             util_keylet(SBUF(balkl), KEYLET_ACCOUNT, HOOK_ACC, 20, 0,0,0,0);
         else
-            util_keylet(SBUF(balkl), KEYLET_LINE, otxn_account, 20, dest_account, 20, amount_buf + 28, 20);
+            util_keylet(SBUF(balkl), KEYLET_LINE, otxn_account, 20, dest_account, 20, amount_buf + 8, 20);
 
-        if (slot_set(SBUF(balkl), 20) != 20 || slot_subfield(20, sfBalance, 20) != 20)
+        if (DEBUG)
+            trace(SBUF("Balance Keylet:"), SBUF(balkl), 1);
+
+        if (slot_set(SBUF(balkl), 20) != 20)
             accept(SBUF("Savings: Could not load target balance"), __LINE__);
+        if (slot_subfield(20, sfBalance, 20) != 20)
+            accept(SBUF("Savings: Could not load target balance 2"), __LINE__);
 
+        uint8_t raw[49];
+
+        int64_t bytes = slot(SBUF(raw), 20);
+        trace(SBUF("raw:"), raw, bytes, 1);
         balance = slot_float(20);
+        TRACEVAR(balance);
     }
     
     uint8_t key;
@@ -129,20 +147,28 @@ int64_t hook(uint32_t r)
     {
         hook_again();
         // we'll store this for the weak execution
+        
+        trace_float(SBUF("before balance"), balance);
         state_set(&balance, sizeof(balance), &key, 1);
         accept(SBUF("Savings: requesting weak execution."), __LINE__);
     }
     else
     {
         // load the amount before exeuction
-        state(&prior_balance, sizeof(prior_balance), &key, 1);
+        int64_t result = state(&prior_balance, sizeof(prior_balance), &key, 1);
+        TRACEVAR(result);
+        TRACEVAR(prior_balance);
         state_set(0,0, &key, 1);
+        trace_float(SBUF("before balance loaded"), prior_balance);
+        trace_float(SBUF("after balance"), balance);
     }
 
     // compute and normalize mutation
     int64_t amount = float_sum(float_negate(balance), prior_balance);
     if (float_compare(amount, 0, COMPARE_LESS) == 1)
         amount = float_negate(amount);
+
+    trace_float(SBUF("balance mutation:"), amount);
 
     uint8_t param_name[3] = {0x53U, 0x41U, 0};
     uint8_t kl[34];
@@ -166,7 +192,13 @@ int64_t hook(uint32_t r)
     if (hook_param(threshold_raw, 16, SBUF(param_name)) != 16)
         accept(SBUF(errmsg), __LINE__); 
            
-    if (float_compare(*((uint64_t*)threshold_raw), amount, COMPARE_LESS) == 1)
+    if (DEBUG)
+    {
+        trace_float(SBUF("amount"), amount);
+        trace_float(SBUF("threshold"), *((uint64_t*)threshold_raw));
+    }
+
+    if (float_compare(amount, *((uint64_t*)threshold_raw), COMPARE_LESS) == 1)
         accept(SBUF("Savings: Threshold not met"), __LINE__); 
 
     uint64_t threshold = *((uint64_t*)threshold_raw);
@@ -243,7 +275,7 @@ int64_t hook(uint32_t r)
     }
     else
     {
-        if (float_sto(AMOUNT_OUT, 49, amount_buf + 28, 20, amount_buf + 8, 20, tosend_xfl, sfAmount) != 49)
+        if (float_sto(AMOUNT_OUT, 49, amount_buf + 8, 20, amount_buf + 28, 20, tosend_xfl, sfAmount) != 49)
             accept(SBUF("Savings: Generating amount failed"), __LINE__);
     }
     
