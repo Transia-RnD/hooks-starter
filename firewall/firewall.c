@@ -1,16 +1,5 @@
 #include "hookapi.h"
 #include <stdint.h>
-#define HAS_CALLBACK
-
-#define ASSERT(x)\
-{\
-    if (!(x))\
-        rollback(0,0,__LINE__);\
-}
-
-#define DONE()\
-    accept(0,0,__LINE__)
-
 /**
     This hook is an omnibus hook that contains 2 different hooks' functionalities. Each of these
     can be enabled or disabled and configured using the provided install-time hook parameter as
@@ -24,6 +13,8 @@
 
     2. Firewall Hook
         If enabled HookOn must be uint256max
+        Parameter Name: 0x4650 ('FP')
+        Parameter Value: <20 byte account ID of blocklist provider>
         Parameter Name: 0x4649 ('FI')
         Parameter Value: <uint256 bit field of allowable transaction types in>
         Parameter Name: 0x464F ('FO')
@@ -35,83 +26,64 @@
 
 **/
 
+uint8_t tts[32] = {
+    0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU,0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU,
+    0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU,0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU, 0xFFU
+};
+            
 int64_t hook(uint32_t r)
 {
     _g(1,1);
-
+    
+    // get the account id
     uint8_t otxn_account[20];
     otxn_field(SBUF(otxn_account), sfAccount);
-
-    // get the account id
-    uint8_t account_field[20];
-    ASSERT(otxn_field(SBUF(account_field), sfAccount) == 20);
 
     uint8_t hook_acc[20];
     hook_account(SBUF(hook_acc));
 
-    uint8_t outgoing = BUFFER_EQUAL_20(hook_acc, account_field);
+    uint8_t outgoing = BUFFER_EQUAL_20(hook_acc, otxn_account);
 
-    uint8_t ttbuf[16];
-    otxn_field(SBUF(ttbuf), sfTransactionType);
-    uint32_t tt = ((uint32_t)(ttbuf[0]) << 16U) + ((uint32_t)(ttbuf[1]));
-    uint64_t ttmask[4];
-    ttmask[tt / 8] = 1 << (tt % 8);
+    uint32_t tt = otxn_type();
 
-    // get flags
-    uint32_t flags = 0;
-    {
-        uint8_t flagbuf[4];
-        otxn_field(SBUF(flagbuf), sfFlags);
-        flags = UINT32_FROM_BUF(flagbuf);
-    }
+    if (tt == 22)
+        accept(SBUF("Firewall: Passing SetHook txn"), __LINE__);
 
     // get the relevant amount, if any
     int64_t amount = -1;
-    int64_t amount_native = 0;
+    int64_t amount_native;
     otxn_slot(1);
+    
     if (slot_subfield(1, sfAmount, 1) == 1)
     {
         amount = slot_float(1);
-        amount_native = slot_size(1) == 8;
+        amount_native = slot_size(1) == 9;
     }
 
+    // check flags
+    uint8_t flagbuf[4];
+    otxn_field(SBUF(flagbuf), sfFlags);
 
     // Blocklist
     {
-        uint8_t param_name[1] = {0x42U};
+        uint8_t param_name[2] = {'F', 'P'};
         uint8_t provider[20];
-        if (hook_param(SBUF(provider), SBUF(param_name)) == sizeof(provider))
-        {
-            uint8_t ns[32];
-            uint8_t tx[32];
-            if (state_foreign(SBUF(tx), SBUF(otxn_account), SBUF(ns), SBUF(provider)) == 32)
-                rollback(SBUF("Blocklist match"), __LINE__);
-        }
+        hook_param(SBUF(provider), SBUF(param_name));
+        uint8_t dummy[64];
+        if (state_foreign(dummy, 32, SBUF(otxn_account), dummy + 32, 32, SBUF(provider)) > 0)
+            rollback(SBUF("Blocklist match"), __LINE__);
     }
 
     // Firewall
     {
         // check allowable txn types
         {
-            uint8_t param_name[2] = {0x46U, 0x4FU};
-            if (!outgoing)
-                param_name[1] = 0x49U;
-            uint64_t tts[4] =
-            {
-                0xFFFFFFFFFFFFFFFFULL,
-                0xFFFFFFFFFFFFFFFFULL,
-                0xFFFFFFFFFFFFFFFFULL,
-                0xFFFFFFFFFFFFFFFFULL
-            };
-            int64_t result = hook_param(tts, 32, SBUF(param_name));
-
-            ASSERT(result == 32 || result == DOESNT_EXIST);
+            uint8_t param_name[2] = {'F', outgoing ? 'O' : 'I'};
+            
+            hook_param(tts, 32, SBUF(param_name));
 
             // check if its on the list of blocked txn types
-            if (!((ttmask[0] & tts[0]) |
-                (ttmask[1] & tts[1]) |
-                (ttmask[2] & tts[2]) |
-                (ttmask[3] & tts[3])))
+            if (tts[tt >> 3] & (tt % 8))
                 rollback(SBUF("Firewall blocked txn type"), __LINE__);
 
         }
@@ -119,27 +91,23 @@ int64_t hook(uint32_t r)
         // if its an incoming payment ensure it passes the threshold
         if (!outgoing && amount >= 0)
         {
-            if (flags & 0x00020000UL)
-                rollback(SBUF("Firewall blocked partial payment"), __LINE__);
+        
+            if (flagbuf[2] & 2U)
+                rollback(SBUF("Firewall blocked incoming partial payment"), __LINE__);
 
             // threshold for drops
-            uint8_t param_name[2] = {0x46U, 0x44U};
+            uint8_t param_name[2] = {'F', amount_native ? 'D' : 'T'};
 
-            // if it was a tl amount then change to threshold for trustline
-            if (!amount_native)
-                param_name[1] = 0x54U;
-
-            uint64_t threshold;
-            if (hook_param(&threshold, 8, SBUF(param_name)) == 8)
-                if (float_compare(amount, threshold, COMPARE_LESS) == 1)
-                    rollback(SBUF("Firewall blocked amount below threshold"), __LINE__);
+            // if the parameter doesn't exist then the threshold is unlimited or rather 9.999999999999999e+95
+            int64_t threshold = 7810234554605699071LL;
+            hook_param(&threshold, 8, SBUF(param_name));
+            if (float_compare(amount, threshold, COMPARE_LESS) == 1)
+                rollback(SBUF("Firewall blocked amount below threshold"), __LINE__);
 
         }
 
-
-        // OK!
     }
 
-    accept(0,0,0);
+    return accept(SBUF("Firewall: Passing txn within thresholds"), __LINE__);
 }
 
