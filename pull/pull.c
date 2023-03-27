@@ -1,6 +1,9 @@
 #include "hookapi.h"
 #include <stdint.h>
-#define HAS_CALLBACK
+
+#define DEBUG 1
+
+#define SVAR(x) &x, sizeof(x)
 
 #define ASSERT(x)\
 {\
@@ -8,8 +11,8 @@
         rollback(0,0,__LINE__);\
 }
 
-#define DONE()\
-    accept(0,0,__LINE__)
+#define DONE(msg)\
+    accept(msg, sizeof(msg),__LINE__)
 
 // credit for date contribution algorithm: https://stackoverflow.com/a/42936293 (Howard Hinnant)
 #define SETUP_CURRENT_MONTH()\
@@ -27,209 +30,197 @@ uint16_t current_month = 0;\
     uint64_t m = mp + (mp < 10 ? 3 : -9);\
     y += (m <= 2);\
     current_month = y * 12 + m;\
-    TRACEVAR(y);\
-    TRACEVAR(m);\
-    TRACEVAR(d);\
-    TRACEVAR(current_month);\
+    if (DEBUG) \
+    {\
+        TRACEVAR(y);\
+        TRACEVAR(m);\
+        TRACEVAR(d);\
+        TRACEVAR(current_month);\
+    }\
 }
 
-/*
- * RH TODO: if a pull payment fails then decrement the used allowance so it can be retried
-int64_t cbak(uint32_t w)
+#define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
+                                   ((n & 0xFF00U) << 8U) | \
+                                 ((n & 0xFF0000U) >> 8U) | \
+                                ((n & 0xFF000000U) >> 24U)))
+
+
+uint8_t txn[283] =
 {
-    if (w != 1)
-        return 0;
+/* size,upto */
+/*   3,  0 */   0x12U, 0x00U, 0x00U,                                                               /* tt = Payment */
+/*   5,  3*/    0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                                          /* flags = tfCanonical */
+/*   5,  8 */   0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                                                 /* sequence = 0 */
+/*   5, 13 */   0x99U, 0x99U, 0x99U, 0x99U, 0x99U,                                                /* dtag, flipped */
+/*   6, 18 */   0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,                                      /* first ledger seq */
+/*   6, 24 */   0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,                                       /* last ledger seq */
+/*  49, 30 */   0x61U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,              /* amount field 9 or 49 bytes */
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
+                0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99,
+/*   9, 79 */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,                         /* fee      */
+/*  35, 88 */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,       /* pubkey   */
+/*  22,123 */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                 /* src acc  */
+/*  22,145 */   0x83U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                 /* dst acc  */
+/* 116,167 */   /* emit details */
+/*   0,283 */
+};
 
-    // we only want to handle the case where an emitted txn failed
-    SETUP_CURRENT_MONTH(); // populates a uint16_t current_month variable
+/**
+    All integer values are marked for size and endianness
 
-
-}
- */
-
+    Direct Debit Hook
+        Parameter Name: <20 byte account ID of receiver>
+        Parameter Value: 8 or 48 bytes
+            <8 byte xfl LE allowance per month>
+            [20 byte currency code, not present if xrp]
+            [20 byte issuer code not present is xrp]
+**/
+#define FLS_OUT (txn + 20U)                                                                                            
+#define LLS_OUT (txn + 26U)                                                                                            
+#define DTAG_OUT (txn + 14U)                                                                                           
+#define AMOUNT_OUT (txn + 30U)                                                                                         
+#define HOOK_ACC (txn + 125U)                                                                                          
+#define EMIT_OUT (txn + 167U)                                                                                          
+#define FEE_OUT (txn + 80U)  
+#define REQUESTER_ACC (txn + 147U)
 
 int64_t hook(uint32_t r)
 {
     _g(1,1);
 
-    etxn_reserve(1);
-
-    uint8_t ttbuf[16];
-    int64_t br = otxn_field(SBUF(ttbuf), sfTransactionType);
-    uint32_t txntype = ((uint32_t)(ttbuf[0]) << 16U) + ((uint32_t)(ttbuf[1]));
-
     // pass anything that isn't a ttINVOKE
-    if (txntype != 99)
-        DONE();
+    if (otxn_type() != 99)
+        DONE("Direct debit: Passing non-Invoke txn");
 
     // get the account id
-    uint8_t account_field[20];
-    ASSERT(otxn_field(SBUF(account_field), sfAccount) == 20);
+    otxn_field(REQUESTER_ACC, 20, sfAccount);
 
-    uint8_t hook_accid[20];
-    hook_account(SBUF(hook_accid));
-    
-    // pass outgoing txns
-
-    int self_sent_txn = 0;
+    hook_account(HOOK_ACC, 20);
 
     // if the account is the sender
-    if (BUFFER_EQUAL_20(hook_accid, account_field))
-    {
-        self_sent_txn = 1;
+    if (BUFFER_EQUAL_20(HOOK_ACC, REQUESTER_ACC))
+        DONE("Direct debit: Ignoring self-Invoke");
 
-        // ... and there is a destination set
-        uint8_t dest[20];
-        if (otxn_field(SBUF(dest), sfDestination) == 20)
-        {
-            // ... and the destination isnt the account
-            if (!BUFFER_EQUAL_20(hook_accid, dest))
-            {
-                // .. then they are invoking someone else's hook
-                // and we need to not interfere with that.
-                DONE();
-            }
-        }
+    uint8_t request_buf[48]; // < xlf 8b req amount, 20b currency, 20b issuer > 
+    uint8_t request_key[6] = { 'R', 'E', 'Q', 'A', 'M', 'T' };
+    if (otxn_param(SBUF(request_buf), SBUF(request_key)) < 8)
+        DONE("Direct debit: Passing Invoke that lacks REQAMT otxn parameter");
+
+    int64_t request = *((int64_t*)request_buf);
+
+    if (float_compare(request, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
+        rollback(SBUF("Direct debit: Invalid REQAMT"), __LINE__);
+
+
+    // read in such that the currency alignment is met
+    uint8_t limit_buf[48];
+    int64_t limit_native = hook_param(SBUF(request_buf), REQUESTER_ACC, 20) == 8;
+
+    // check the limit is not zero (i.e., probably the key doesn't exist)
+    int64_t limit = *((int64_t*)limit_buf);
+
+    if (limit == 0)
+        rollback(SBUF("Direct debit: Requester is not authorized"), __LINE__);
+
+    // check the requested currency matches
+    {
+        uint64_t* req_issue = request_buf + 8;
+        uint64_t* amt_issue = limit_buf + 8;
+
+        if (req_issue[0] != amt_issue[0] ||
+            req_issue[1] != amt_issue[1] ||
+            req_issue[2] != amt_issue[2] ||
+            req_issue[3] != amt_issue[3] ||
+            req_issue[4] != amt_issue[4])
+            rollback(SBUF("Direct debit: Requested currency/issuer differs from authorized currency/issuer"), __LINE__);
     }
 
 
-    // hook has two modes: un/set and request
-    // to set use hook parameter name=accountid, value=monthly authorized amount
-    // to unset set authorized amount to 0
-    // to request perform a blank invoke with a requested amount encoded in the invoice ID field
+    // grab the current state for this entry, if it exists, if it doesn't it's populated with 0
+    int64_t used[2]; // < xfl amount used 8b LE, month number 8b LE >
+    state(SBUF(used), REQUESTER_ACC, 20); // if state() fails then used is 0 by default
 
     SETUP_CURRENT_MONTH(); // populates a uint16_t current_month variable
 
-    otxn_slot(1);
-
-    int params = slot_subfield(1, sfHookParameters, 2) == 2;
-    int invoice = slot_subfield(1, sfInvoiceID, 3) == 3;
-
-    // must specify exactly one
-    ASSERT(params || invoice);
-    ASSERT(!(params && invoice));
-
-    if (params)
+    // reset if it's a new month
+    if (used[1] != current_month)
     {
-        // set/unset mode
-       
-        // check permission first! 
-        ASSERT(self_sent_txn);
-
-        // slot the parameter k-v
-        ASSERT(slot_subarray(2, 0, 4) == 4);
-        ASSERT(slot_subfield(4, sfHookParameterName, 5)  == 5);
-        ASSERT(slot_subfield(4, sfHookParameterValue, 6) == 6);
-
-        uint8_t k[21];
-        ASSERT(slot(SBUF(k), 5) == 21);
-
-        // packed data in value field starting from byte 0:
-        // monthly allowance: uint64_t      0 - 7
-        // month last claim : uint16_t      8 - 9
-        // amount claimed   : uint64_t     10 - 17
-        //
-        // RH NOTE: v[0] == the length of the field due to serialization
-        uint8_t vbuf[18];
-        ASSERT(slot(SBUF(vbuf), 6) == 9);
-
-        uint8_t* v = vbuf+1;
-
-        // check if account exists on the ledger
-
-        uint8_t kl[34];
-        ASSERT(util_keylet(SBUF(kl), KEYLET_ACCOUNT, k+1, 20, 0,0,0,0) == 34);
-
-        ASSERT(slot_set(SBUF(kl), 7) == 7);
-
-        // it does, now check if the value is zero
-        if (*((uint64_t*)(v)) == 0)
-        {
-            // this is the unset operation
-            ASSERT(state_set(0,0, k+1, 20) == 0);
-        }
-        else
-        {
-            // this is the set operation
-            // configure the rest of the v buffer
-            *(v+8) = (current_month >> 8U);
-            *(v+9) = current_month & 0xFFU;
-            // remaining bytes are zero which is what we want
-            ASSERT(state_set(v, 18, k+1, 20) == 18);
-        }
-
-        DONE();
+        used[1] = current_month;
+        used[0] = 0;
     }
 
-    // execution to here is pull mode
+    // increment the counter
+    if ((used[0] = float_sum(used[0], request)) <= 0 || float_compare(limit, used[0], COMPARE_LESS) == 1)
+        rollback(SBUF("Direct debit: Invalid request amount or would exceed monthly limit"), __LINE__);
 
-    // first check if they have an entry (authorization)
-    uint8_t packed[18];
-    ASSERT(state(SBUF(packed), SBUF(account_field)) == 18);
+    // prepare the txn
+    etxn_reserve(1);
 
-    // get the requested amount from invoice id
-    uint8_t inv[32];
-    ASSERT(slot(SBUF(inv), 3) == 32);
+    uint32_t fls = (uint32_t)ledger_seq() + 1;
+    uint32_t lls = fls + 4 ;
 
-    // the low bytes in big endian are the requested amount
-    int64_t requested_amount =
-        UINT64_FROM_BUF(inv + 24);
+    // fls
+    *((uint32_t*)(FLS_OUT)) = FLIP_ENDIAN(fls);
 
-    // RH TODO: it would be good to check account's balance here
-    // but it requires computing the reserve which requires looking up the fees object
-    // which is quite a lot of additional instructions and no guarentee the txn won't fail anyway
-    // so better to catch overdraft in the callback
+    // lls
+    *((uint32_t*)(LLS_OUT)) = FLIP_ENDIAN(lls);
 
-    int64_t already_requested =
-        UINT64_FROM_BUF(packed + 10);
-
-    int64_t allowance = 
-        UINT64_FROM_BUF(packed);
-
-    uint16_t already_requested_month =
-        UINT16_FROM_BUF(packed + 8);
-
-    if (already_requested_month != current_month)
+    // amount block
+    if (limit_native)
     {
-        already_requested = 0;
-        packed[8] = (uint8_t)((current_month >> 8) & 0xFFU);
-        packed[9] = (uint8_t)((current_month >> 0) & 0xFFU);
+        uint64_t drops = float_int(request, 6, 1);
+        uint8_t* b = AMOUNT_OUT + 1;
+        *b++ = 0b01000000 + (( drops >> 56 ) & 0b00111111 );
+        *b++ = (drops >> 48) & 0xFFU;
+        *b++ = (drops >> 40) & 0xFFU;
+        *b++ = (drops >> 32) & 0xFFU;
+        *b++ = (drops >> 24) & 0xFFU;
+        *b++ = (drops >> 16) & 0xFFU;
+        *b++ = (drops >>  8) & 0xFFU;
+        *b++ = (drops >>  0) & 0xFFU;
     }
+    else
+        float_sto(AMOUNT_OUT, 49, request_buf + 8, 20, request_buf + 28, 20, request, sfAmount);
+
+    // dest tag from source tag
+    if (otxn_field(DTAG_OUT, 4, sfSourceTag) == 4)
+        *(DTAG_OUT-1) = 0x2EU;
+
+    // emit details block
+    etxn_details(EMIT_OUT, 116U);                                                                                      
+                                                                                                                       
+    // fee                                                                                                             
+    {                                                                                                                  
+        int64_t fee = etxn_fee_base(SBUF(txn));                                                                        
+        if (DEBUG)                                                                                                     
+            TRACEVAR(fee);                                                                                             
+        uint8_t* b = FEE_OUT;                                                                                          
+        *b++ = 0b01000000 + (( fee >> 56 ) & 0b00111111 );                                                             
+        *b++ = (fee >> 48) & 0xFFU;                                                                                    
+        *b++ = (fee >> 40) & 0xFFU;                                                                                    
+        *b++ = (fee >> 32) & 0xFFU;                                                                                    
+        *b++ = (fee >> 24) & 0xFFU;                                                                                    
+        *b++ = (fee >> 16) & 0xFFU;                                                                                    
+        *b++ = (fee >>  8) & 0xFFU;                                                                                    
+        *b++ = (fee >>  0) & 0xFFU;                                                                                    
+    }  
+
+
+    if (DEBUG)
+        trace(SBUF("txnraw"), SBUF(txn), 1);
     
-    int64_t after = already_requested + requested_amount;
+    // emit the transaction
+    uint8_t emithash[32];
+    int64_t emit_result = emit(SBUF(emithash), SBUF(txn));
+    if (emit_result > 0)
+    {
+        // save the state
+        state_set(SBUF(used), REQUESTER_ACC, 20);
+        accept(SBUF("Direct debit: Successfully emitted"), __LINE__);
+    }
 
-    TRACEVAR(requested_amount);
-    TRACEVAR(already_requested_month);
-    TRACEVAR(already_requested);
-    TRACEVAR(allowance);
-    TRACEVAR(after);
-
-    // catch overflow, and zero drop request
-    ASSERT(after > already_requested);
-    ASSERT(after >= requested_amount);
-
-    // catch overspend
-    ASSERT(after <= allowance);
-
-    // execution to here means the request is OK
-
-    // update the state
-    UINT64_TO_BUF(packed + 10, after);
-    ASSERT(state_set(SBUF(packed), SBUF(account_field)) == 18);
-   
-    // emit the txn 
-    uint8_t tx[PREPARE_PAYMENT_SIMPLE_SIZE];                                                                           
-    PREPARE_PAYMENT_SIMPLE(tx, requested_amount, account_field, 0, 0);                                                     
-                        
-    TRACEHEX(tx);
-
-
-    // emit the transaction                                                                                            
-    uint8_t emithash[32];                                                                                              
-    int64_t emit_result = emit(SBUF(emithash), SBUF(tx));                                                              
-    ASSERT(emit_result > 0);
-
-    TRACEVAR(emit_result);     
-
-    accept(0,0,0);
+    return rollback(SBUF("Direct debit: Emit unsuccessful"), __LINE__);
 }
