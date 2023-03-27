@@ -1,6 +1,5 @@
 #include "hookapi.h"
 #include <stdint.h>
-#define HAS_CALLBACK
 
 #define DONE()\
     accept(0,0,__LINE__)
@@ -28,22 +27,22 @@
 uint8_t txn[283] =
 {
 /* size,upto */
-/*   3,  0 */       0x12U, 0x00U, 0x00U,                                /* tt = Payment */
-/*   5,  3*/       0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                   /* flags = tfCanonical */
-/*   5,  8 */       0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                  /* sequence = 0 */
-/*   5, 13 */       0x99U, 0x99U, 0x99U, 0x99U, 0x99U,                  /* dtag, flipped */
-/*   6, 18 */       0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,           /* first ledger seq */
-/*   6, 24 */       0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,           /* last ledger seq */
-/*  49, 30 */   0x61U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, /* amount field 9 or 49 bytes */
+/*   3,  0 */   0x12U, 0x00U, 0x00U,                                                               /* tt = Payment */
+/*   5,  3*/    0x22U, 0x80U, 0x00U, 0x00U, 0x00U,                                          /* flags = tfCanonical */
+/*   5,  8 */   0x24U, 0x00U, 0x00U, 0x00U, 0x00U,                                                 /* sequence = 0 */
+/*   5, 13 */   0x99U, 0x99U, 0x99U, 0x99U, 0x99U,                                                /* dtag, flipped */
+/*   6, 18 */   0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,                                      /* first ledger seq */
+/*   6, 24 */   0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,                                       /* last ledger seq */
+/*  49, 30 */   0x61U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,              /* amount field 9 or 49 bytes */
                 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
                 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
                 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
                 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U,
                 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99U, 0x99,
-/*   9, 79 */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,                      /* fee      */
-/*  35, 88 */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,    /* pubkey   */
-/*  22,123 */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                            /* src acc  */
-/*  22,145 */   0x83U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                            /* dst acc  */
+/*   9, 79 */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,                         /* fee      */
+/*  35, 88 */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,       /* pubkey   */
+/*  22,123 */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                 /* src acc  */
+/*  22,145 */   0x83U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,                                 /* dst acc  */
 /* 116,167 */   /* emit details */
 /*   0,283 */
 };
@@ -59,41 +58,26 @@ uint8_t txn[283] =
 
 uint8_t errmsg[] = "Savings: Threshold doesn't exist   ";
 
-//
-// RH TODO: partial payments via AAW
-//
-
 int64_t hook(uint32_t r)
 {
     _g(1,1);
 
     if (otxn_type() != 0)
-        accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
+        return accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
     uint8_t otxn_account[20];
     otxn_field(SBUF(otxn_account), sfAccount);
 
     // get the account id
     uint8_t account_field[20];
-    if (otxn_field(SBUF(account_field), sfAccount) != 20)
-        accept(SBUF("Savings: Could not get account field!"), __LINE__);
-
+    otxn_field(SBUF(account_field), sfAccount);
     hook_account(HOOK_ACC, 20);
 
     uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, account_field);
 
     uint8_t dest_account[20];
-    if (otxn_field(SBUF(dest_account), sfDestination) != 20)
-        accept(SBUF("Savings: No destination"), __LINE__);
+    otxn_field(SBUF(dest_account), sfDestination);
 
-    // get flags
-    uint32_t flags = 0;
-    {
-        uint8_t flagbuf[4];
-        otxn_field(SBUF(flagbuf), sfFlags);
-        flags = UINT32_FROM_BUF(flagbuf);
-    }
-   
     // get the relevant amount, if any
     int64_t amount_native = 0;
     uint8_t amount_buf[48];
@@ -104,8 +88,7 @@ int64_t hook(uint32_t r)
         slot_subfield(1, sfAmount, 10);
 
     amount_native = slot_size(10) == 8;
-    if (slot(SBUF(amount_buf), 10) <= 0)
-        accept(SBUF("Savings: Could not get amount"), __LINE__);
+    slot(SBUF(amount_buf), 10);
 
     int64_t balance, prior_balance;
 
@@ -134,12 +117,17 @@ int64_t hook(uint32_t r)
         if (slot_subfield(20, sfBalance, 20) != 20)
             accept(SBUF("Savings: Could not load target balance 2"), __LINE__);
 
-        uint8_t raw[49];
+        if (DEBUG)
+        {
+            uint8_t raw[49];
+            int64_t bytes = slot(SBUF(raw), 20);
+            trace(SBUF("raw:"), raw, bytes, 1);
+        }
 
-        int64_t bytes = slot(SBUF(raw), 20);
-        trace(SBUF("raw:"), raw, bytes, 1);
         balance = slot_float(20);
-        TRACEVAR(balance);
+
+        if (DEBUG)
+            TRACEVAR(balance);
     }
     
     uint8_t key;
@@ -148,19 +136,27 @@ int64_t hook(uint32_t r)
         hook_again();
         // we'll store this for the weak execution
         
-        trace_float(SBUF("before balance"), balance);
+        if (DEBUG)
+            trace_float(SBUF("before balance"), balance);
+
         state_set(&balance, sizeof(balance), &key, 1);
         accept(SBUF("Savings: requesting weak execution."), __LINE__);
     }
     else
     {
         // load the amount before exeuction
-        int64_t result = state(&prior_balance, sizeof(prior_balance), &key, 1);
-        TRACEVAR(result);
-        TRACEVAR(prior_balance);
+        state(&prior_balance, sizeof(prior_balance), &key, 1);
+
+        if (DEBUG)
+            TRACEVAR(prior_balance);
+        
         state_set(0,0, &key, 1);
-        trace_float(SBUF("before balance loaded"), prior_balance);
-        trace_float(SBUF("after balance"), balance);
+
+        if (DEBUG)
+        {
+            trace_float(SBUF("before balance loaded"), prior_balance);
+            trace_float(SBUF("after balance"), balance);
+        }
     }
 
     // compute and normalize mutation
@@ -168,15 +164,15 @@ int64_t hook(uint32_t r)
     if (float_compare(amount, 0, COMPARE_LESS) == 1)
         amount = float_negate(amount);
 
-    trace_float(SBUF("balance mutation:"), amount);
+    if (DEBUG)
+        trace_float(SBUF("balance mutation:"), amount);
 
     uint8_t param_name[3] = {0x53U, 0x41U, 0};
     uint8_t kl[34];
     if (hook_param(SAVINGS_ACC, 20, param_name, 2) != 20)
         accept(SBUF("Savings: No account set"), __LINE__);
 
-    if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, SAVINGS_ACC, 20, 0,0,0,0) != 34)
-        accept(SBUF("Savings: Could not generate keylet"), __LINE__);
+    util_keylet(SBUF(kl), KEYLET_ACCOUNT, SAVINGS_ACC, 20, 0,0,0,0);
 
     if (slot_set(SBUF(kl), 2) != 2)
         accept(SBUF("Savings: Dest account doesn't exist"), __LINE__);
@@ -192,23 +188,24 @@ int64_t hook(uint32_t r)
     if (hook_param(threshold_raw, 16, SBUF(param_name)) != 16)
         accept(SBUF(errmsg), __LINE__); 
            
+    uint64_t threshold = *((uint64_t*)threshold_raw);
+    
+    if (amount_native)
+        threshold = float_mulratio(threshold, 1UL, 1UL, 1000000UL);
+
     if (DEBUG)
     {
         trace_float(SBUF("amount"), amount);
-        trace_float(SBUF("threshold"), *((uint64_t*)threshold_raw));
+        trace_float(SBUF("threshold"), threshold);
     }
 
-    if (float_compare(amount, *((uint64_t*)threshold_raw), COMPARE_LESS) == 1)
+    if (float_compare(amount, threshold, COMPARE_LESS) == 1)
         accept(SBUF("Savings: Threshold not met"), __LINE__); 
 
-    uint64_t threshold = *((uint64_t*)threshold_raw);
     uint64_t percent =  *(((uint64_t*)(threshold_raw)) + 1);
 
     if (DEBUG)
-    {
-        trace_num(SBUF("threshold"), threshold);
         trace_num(SBUF("percent"), percent);
-    }
 
     int64_t tosend_xfl =
         float_multiply(amount, percent);
@@ -274,10 +271,7 @@ int64_t hook(uint32_t r)
         *b++ = (drops >>  0) & 0xFFU;            
     }
     else
-    {
-        if (float_sto(AMOUNT_OUT, 49, amount_buf + 8, 20, amount_buf + 28, 20, tosend_xfl, sfAmount) != 49)
-            accept(SBUF("Savings: Generating amount failed"), __LINE__);
-    }
+        float_sto(AMOUNT_OUT, 49, amount_buf + 8, 20, amount_buf + 28, 20, tosend_xfl, sfAmount);
     
     etxn_details(EMIT_OUT, 116U);
 
