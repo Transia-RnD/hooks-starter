@@ -117,7 +117,7 @@ int64_t hook(uint32_t r)
 
     // read in such that the currency alignment is met
     uint8_t limit_buf[48];
-    int64_t limit_native = hook_param(SBUF(request_buf), REQUESTER_ACC, 20) == 8;
+    int64_t limit_native = hook_param(SBUF(limit_buf), REQUESTER_ACC, 20) == 8;
 
     // check the limit is not zero (i.e., probably the key doesn't exist)
     int64_t limit = *((int64_t*)limit_buf);
@@ -145,6 +145,7 @@ int64_t hook(uint32_t r)
 
     SETUP_CURRENT_MONTH(); // populates a uint16_t current_month variable
 
+
     // reset if it's a new month
     if (used[1] != current_month)
     {
@@ -152,9 +153,16 @@ int64_t hook(uint32_t r)
         used[0] = 0;
     }
 
+    if (DEBUG)
+    {
+        trace_float(SBUF("limit"), limit);
+        trace_float(SBUF("used[0]"), used[0]);
+    }
+
     // increment the counter
-    if ((used[0] = float_sum(used[0], request)) <= 0 || float_compare(limit, used[0], COMPARE_LESS) == 1)
-        rollback(SBUF("Direct debit: Invalid request amount or would exceed monthly limit"), __LINE__);
+    used[0] = float_sum(used[0], request);
+    if (used[0] <= 0 || float_compare(limit, used[0], COMPARE_LESS) == 1)
+        rollback(SBUF("Direct debit: Would exceed monthly limit"), __LINE__);
 
     // prepare the txn
     etxn_reserve(1);
