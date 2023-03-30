@@ -1,6 +1,9 @@
 #include "hookapi.h"
 #include <stdint.h>
 
+#define LEDGER_DELAY 10
+#define LEDGER_DELAY_STRING "10"
+
 #define DONE(msg)\
     return accept(msg, sizeof(msg),__LINE__)
 
@@ -15,7 +18,7 @@
 **/
 
 uint8_t drops_key[3] = {'H', 'V', 'D'};
-uint8_t tl_key[3] = {'H', 'V', 'T'};
+uint8_t tl_key[3]    = {'H', 'V', 'T'};
 uint8_t amount_buf[8];
 
 int64_t hook(uint32_t r)
@@ -33,7 +36,7 @@ int64_t hook(uint32_t r)
     uint8_t hook_acc[20];
     hook_account(SBUF(hook_acc));
 
-    // if the account is the sender
+    // pass incoming txns
     if (!BUFFER_EQUAL_20(hook_acc, otxn_acc))
         DONE("High value: Ignoring incoming Payment");
 
@@ -45,7 +48,43 @@ int64_t hook(uint32_t r)
         DONE("High value: Passing outgoing Payment txn for which no threshold is set");
 
     if (float_compare(threshold, slot_float(2), COMPARE_LESS) == 1)
-        rollback(SBUF("High value: Payment exceeds threshold. Use Invoke to send."), __LINE__);
+    {
+        // check if they prepared for it
+     
+        /*
+         * Packed state data:
+         *   0-19 : destination acc
+         *  20-20 : has dtag
+         *  21-24 : dtag if any
+         *  25-73 : amount tl/drops
+         */
+        
+        #define DEST (data + 0)
+        #define DTAG (data + 21)
+        #define AMT (data + 25)
 
-    DONE("High value: Paying outgoing Payment less than threshold.");
+        uint8_t data[73];
+
+        otxn_field(DEST, 20, sfDestination) == 20;
+        uint8_t has_dtag = otxn_field(DTAG, 4, sfDestinationTag) == 4;
+        int64_t amt_size = otxn_field(AMT, 48,  sfAmount);
+
+        *(data + 20) = has_dtag;
+        
+        uint8_t hash[32];
+        util_sha512h(SBUF(hash), SBUF(data));
+
+        int64_t current_lgr = ledger_seq();
+        int64_t prepare_lgr;
+
+        if (state(&prepare_lgr, sizeof(prepare_lgr), SBUF(hash)) != sizeof(prepare_lgr))
+            rollback(SBUF("High value: Payment exceeds threshold. Use Invoke to send."), __LINE__);
+        
+        if (current_lgr - prepare_lgr < LEDGER_DELAY)
+            rollback(SBUF("High value: Too soon, wait until "LEDGER_DELAY_STRING" ledgers have passed."), __LINE__);
+
+        DONE("High value: Passing prepared high value txn");   
+    }
+
+    DONE("High value: Passing outgoing Payment less than threshold");
 }

@@ -1,7 +1,7 @@
-all: highvalue.wasm highvalue-block.wasm
-highvalue.wasm: highvalue.c
-	wasmcc highvalue.c -o highvalue.wasm -Oz -Wl,--allow-undefined  -I../
-	wasm-opt highvalue.wasm -o highvalue.wasm \
+all: highvalue-prepare.wasm highvalue-block.wasm
+highvalue-prepare.wasm: highvalue-prepare.c
+	wasmcc highvalue-prepare.c -o highvalue-prepare.wasm -Oz -Wl,--allow-undefined  -I../
+	wasm-opt highvalue-prepare.wasm -o highvalue-prepare.wasm \
 	    --shrink-level=100000000 \
 	    --coalesce-locals-learning \
 	    --vacuum \
@@ -26,8 +26,8 @@ highvalue.wasm: highvalue.c
 	    -c \
 	    --avoid-reinterprets \
 	    -Oz
-	hook-cleaner highvalue.wasm
-	wasm-opt highvalue.wasm -o highvalue.wasm \
+	hook-cleaner highvalue-prepare.wasm
+	wasm-opt highvalue-prepare.wasm -o highvalue-prepare.wasm \
 	    --shrink-level=100000000 \
 	    --coalesce-locals-learning \
 	    --vacuum \
@@ -52,8 +52,8 @@ highvalue.wasm: highvalue.c
 	    -c \
 	    --avoid-reinterprets \
 	    -Oz
-	hook-cleaner highvalue.wasm
-	guard_checker highvalue.wasm
+	hook-cleaner highvalue-prepare.wasm
+	guard_checker highvalue-prepare.wasm
 highvalue-block.wasm: highvalue-block.c
 	wasmcc highvalue-block.c -o highvalue-block.wasm -Oz -Wl,--allow-undefined  -I../
 	wasm-opt highvalue-block.wasm -o highvalue-block.wasm \
