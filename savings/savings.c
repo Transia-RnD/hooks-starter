@@ -4,6 +4,12 @@
 #define DONE()\
     accept(0,0,__LINE__)
 
+#define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
+                        ((n & 0xFF00U) << 8U) | \
+                        ((n & 0xFF0000U) >> 8U) | \
+                        ((n & 0xFF000000U) >> 24U)));
+
+
 /**
     All integer values are marked for size and endianness
 
@@ -65,15 +71,12 @@ int64_t hook(uint32_t r)
     if (otxn_type() != 0)
         return accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
+    // get the account id
     uint8_t otxn_account[20];
     otxn_field(SBUF(otxn_account), sfAccount);
-
-    // get the account id
-    uint8_t account_field[20];
-    otxn_field(SBUF(account_field), sfAccount);
     hook_account(HOOK_ACC, 20);
 
-    uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, account_field);
+    uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, otxn_account);
 
     uint8_t dest_account[20];
     otxn_field(SBUF(dest_account), sfDestination);
@@ -130,27 +133,33 @@ int64_t hook(uint32_t r)
             TRACEVAR(balance);
     }
     
-    uint8_t key;
+    uint8_t key[32];
+    otxn_id(SBUF(key), 0);
+
     if (r == 0)
     {
-        hook_again();
         // we'll store this for the weak execution
         
         if (DEBUG)
             trace_float(SBUF("before balance"), balance);
 
-        state_set(&balance, sizeof(balance), &key, 1);
+        if (state_set(&balance, sizeof(balance), SBUF(key)) != sizeof(balance))
+            accept(SBUF("Savings: state save failed due to low reserve, passing txn without emitting"), __LINE__);
+
+        hook_again();
         accept(SBUF("Savings: requesting weak execution."), __LINE__);
     }
     else
     {
         // load the amount before exeuction
-        state(&prior_balance, sizeof(prior_balance), &key, 1);
+
+        if (state(&prior_balance, sizeof(prior_balance), SBUF(key)) != 8)
+            accept(SBUF("Savings: state load failed, passing txn without emitting"), __LINE__);
 
         if (DEBUG)
             TRACEVAR(prior_balance);
         
-        state_set(0,0, &key, 1);
+        state_set(0,0, SBUF(key));
 
         if (DEBUG)
         {
@@ -234,12 +243,6 @@ int64_t hook(uint32_t r)
     }
 
     // prepare the payment
-
-#define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
-                            ((n & 0xFF00U) << 8U) | \
-                            ((n & 0xFF0000U) >> 8U) | \
-                            ((n & 0xFF000000U) >> 24U)));
-
     uint32_t fls = (uint32_t)ledger_seq() + 1;
     uint32_t lls = fls + 4 ;
 
@@ -254,9 +257,6 @@ int64_t hook(uint32_t r)
     if (hook_param(DTAG_OUT, 4, param_name, 2) == 4)
         *(DTAG_OUT-1) = 0x2EU;
         
-
-/*  49 */
-/*or 9 */
     if (amount_native)
     {
         uint64_t drops = float_int(tosend_xfl, 6, 1);
@@ -291,9 +291,7 @@ int64_t hook(uint32_t r)
         *b++ = (fee >>  0) & 0xFFU;            
     }
 
-
     // emit the transaction
-    
     uint8_t emithash[32];
     int64_t emit_result = emit(SBUF(emithash), SBUF(txn));
     if (emit_result > 0)
