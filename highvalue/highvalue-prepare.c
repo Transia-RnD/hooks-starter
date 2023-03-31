@@ -9,9 +9,9 @@
     accept(msg, sizeof(msg),__LINE__)
 
 
-uint8_t dest_key[3] = { 'H', 'D', 'E' };
-uint8_t dtag_key[3] = { 'H', 'D', 'T' };
-uint8_t amt_key[3]  = { 'H', 'A', 'M' };
+uint8_t dest_key[3] = { 'H', 'D', 'E' }; //484445
+uint8_t dtag_key[3] = { 'H', 'D', 'T' }; //484445
+uint8_t amt_key[3]  = { 'H', 'A', 'M' }; //48414D
 
 int64_t hook(uint32_t r)
 {
@@ -68,7 +68,7 @@ int64_t hook(uint32_t r)
     util_sha512h(SBUF(hash), SBUF(data));
 
     int64_t lgr = ledger_seq();
-    if (state_set(&lgr, sizeof(lgr), SBUF(hash)) == sizeof(hash))
+    if (state_set(&lgr, sizeof(lgr), SBUF(hash)) == sizeof(lgr))
         DONE("High value: ready for txn");
 
     return rollback(SBUF("High value: could not set state (low reserve?)"), __LINE__);

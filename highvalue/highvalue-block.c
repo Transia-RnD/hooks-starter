@@ -4,6 +4,8 @@
 #define LEDGER_DELAY 10
 #define LEDGER_DELAY_STRING "10"
 
+#define DEBUG 1
+
 #define DONE(msg)\
     return accept(msg, sizeof(msg),__LINE__)
 
@@ -13,7 +15,7 @@
     High value Payments Block Hook
         Parameter Name: 485644 (HVD)
         Parameter Value: <8 byte xfl of drops threshold to block LE>
-        Parameter Name: 485644 (HDT)
+        Parameter Name: 485654 (HVT)
         Parameter Value: <8 byte xfl of trustline threshold to block LE>
 **/
 
@@ -46,6 +48,12 @@ int64_t hook(uint32_t r)
     int64_t threshold;
     if (hook_param(&threshold, sizeof(threshold), slot_type(2, 1) == 1 ? drops_key : tl_key, 3) != sizeof(threshold))
         DONE("High value: Passing outgoing Payment txn for which no threshold is set");
+
+    if (DEBUG)
+    {
+        trace_float(SBUF("threshold"), threshold);
+        trace_float(SBUF("amount"), slot_float(2));
+    }
 
     if (float_compare(threshold, slot_float(2), COMPARE_LESS) == 1)
     {
