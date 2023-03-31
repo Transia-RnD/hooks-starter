@@ -91,6 +91,9 @@ int64_t hook(uint32_t r)
         if (current_lgr - prepare_lgr < LEDGER_DELAY)
             rollback(SBUF("High value: Too soon, wait until "LEDGER_DELAY_STRING" ledgers have passed."), __LINE__);
 
+        // delete the state
+        state(0,0, SBUF(hash));
+
         DONE("High value: Passing prepared high value txn");   
     }
 
