@@ -10,7 +10,7 @@
 
 
 uint8_t dest_key[3] = { 'H', 'D', 'E' }; //484445
-uint8_t dtag_key[3] = { 'H', 'D', 'T' }; //484445
+uint8_t dtag_key[3] = { 'H', 'D', 'T' }; //484454
 uint8_t amt_key[3]  = { 'H', 'A', 'M' }; //48414D
 
 int64_t hook(uint32_t r)
