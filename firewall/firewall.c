@@ -7,12 +7,7 @@
 
     All integer values are little endian unless otherwise marked
 
-    1. Blocklist Hook
-        Parameter Name: 0x42 ('B')
-        Parameter Value: <20 byte AccountID of blocklist provider>
-
-    2. Firewall Hook
-        If enabled HookOn must be uint256max
+    Firewall Hook
         Parameter Name: 0x4650 ('FP')
         Parameter Value: <20 byte account ID of blocklist provider>
         Parameter Name: 0x4649 ('FI')
