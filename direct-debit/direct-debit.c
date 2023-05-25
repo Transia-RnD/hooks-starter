@@ -43,12 +43,6 @@ uint8_t txn[283] =
 #define HOOK_ACC (txn + 125U)
 #define OTX_ACC (txn + 147U)
 
-// PARAMS
-// P1NL - Parameter 1 Name (bytes)
-#define P1NL 6
-// P1DL - Parameter 1 Data (bytes)
-#define P1DL 48
-
 // TXS
 #define FLS_OUT (txn + 20U)                                                                                            
 #define LLS_OUT (txn + 26U)                                                                                            
@@ -76,8 +70,8 @@ int64_t hook(uint32_t r)
         DONEMSG("Direct debit: Ignoring self-Invoke");
 
     // TX: PARAM -> REQAMT: < xlf 8b req amount, 20b currency, 20b issuer >
-    uint8_t request_buf[P1DL];
-    uint8_t request_key[P1NL] = { 'R', 'E', 'Q', 'A', 'M', 'T' };
+    uint8_t request_buf[48];
+    uint8_t request_key[6] = { 'R', 'E', 'Q', 'A', 'M', 'T' };
     if (otxn_param(SBUF(request_buf), SBUF(request_key)) < 8)
         DONEMSG("Direct debit: Passing Invoke that lacks REQAMT otxn parameter");
 
@@ -87,7 +81,7 @@ int64_t hook(uint32_t r)
         rollback(SBUF("Direct debit: Invalid REQAMT"), __LINE__);
 
     // HOOK: PARAM -> AccountBast64: < xlf 8b req amount, 20b currency, 20b issuer >
-    uint8_t limit_buf[P1DL];
+    uint8_t limit_buf[48];
     int64_t limit_native = hook_param(SBUF(limit_buf), OTX_ACC, SFL_ACCOUNT) == 8;
 
     // TRUSTLINE:
