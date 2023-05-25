@@ -1,14 +1,5 @@
-#include "hookapi.h"
+#include "../utils/hookapi.h"
 #include <stdint.h>
-
-#define DONE()\
-    accept(0,0,__LINE__)
-
-#define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
-                        ((n & 0xFF00U) << 8U) | \
-                        ((n & 0xFF0000U) >> 8U) | \
-                        ((n & 0xFF000000U) >> 24U)));
-
 
 /**
     All integer values are marked for size and endianness
@@ -23,12 +14,12 @@
         Parameter Name: 0x535449 ('STI')
         Parameter Value: <trigger threshold for incoming trustline payments (xfl)><% as xfl LE>
         Parameter Name: 0x5341 ('SA')
-        Parameter Value: <20 byte AccountID of savins destination>
+        Parameter Value: <20 byte AccountID of savings destination>
         Parameter Name: 0x5344 ('SD')
         Parameter Value: <4 byte dest tag BE>
 **/
 
-#define DEBUG 0
+#define DEBUG 1
 
 uint8_t txn[283] =
 {
@@ -68,33 +59,35 @@ int64_t hook(uint32_t r)
 {
     _g(1,1);
 
-    if (otxn_type() != 0)
+    // TT: Transation Type
+    if (otxn_type() != ttPAYMENT)
         return accept(SBUF("Savings: Passing non-payment txn"), __LINE__);
 
-    // get the account id
+    // ACCOUNT:
     uint8_t otxn_account[20];
     otxn_field(SBUF(otxn_account), sfAccount);
     hook_account(HOOK_ACC, 20);
 
     uint8_t outgoing = BUFFER_EQUAL_20(HOOK_ACC, otxn_account);
 
+    // DESTINATION:
     uint8_t dest_account[20];
     otxn_field(SBUF(dest_account), sfDestination);
 
-    // get the relevant amount, if any
+    // AMOUNT:
     int64_t amount_native = 0;
     uint8_t amount_buf[48];
     otxn_slot(1);
 
-    // only use sendmax as the target currency if it's an outgoing payment and sendmax is present, otherwise use amt
+    // *SENDMAX:
     if (!(outgoing && slot_subfield(1, sfSendMax, 10) == 10))
         slot_subfield(1, sfAmount, 10);
 
     amount_native = slot_size(10) == 8;
     slot(SBUF(amount_buf), 10);
 
+    // BALANCE: Account Root
     int64_t balance, prior_balance;
-
     // we need to check balance mutation before and after successful application of the payment txn
     // we do that by getting the balance of the relevant currency and saving it in ephemeral state
     {
@@ -104,21 +97,25 @@ int64_t hook(uint32_t r)
             TRACEHEX(otxn_account);
             TRACEHEX(dest_account);
             TRACEHEX(amount_buf);
+            TRACEVAR(amount_native);
             trace(SBUF("currency"), amount_buf + 8, 20, 1);
         }
-        uint8_t balkl[34];
+        // KEYLET: Account Root
+        uint8_t bal_kl[34];
         if (amount_native)
-            util_keylet(SBUF(balkl), KEYLET_ACCOUNT, HOOK_ACC, 20, 0,0,0,0);
+            util_keylet(SBUF(bal_kl), KEYLET_ACCOUNT, HOOK_ACC, 20, 0,0,0,0);
         else
-            util_keylet(SBUF(balkl), KEYLET_LINE, otxn_account, 20, dest_account, 20, amount_buf + 8, 20);
+            util_keylet(SBUF(bal_kl), KEYLET_LINE, otxn_account, 20, dest_account, 20, amount_buf + 8, 20);
 
         if (DEBUG)
-            trace(SBUF("Balance Keylet:"), SBUF(balkl), 1);
+            trace(SBUF("Balance Keylet:"), SBUF(bal_kl), 1);
 
-        if (slot_set(SBUF(balkl), 20) != 20)
-            accept(SBUF("Savings: Could not load target balance"), __LINE__);
+        // SLOT KEYLET: Account Root
+        if (slot_set(SBUF(bal_kl), 20) != 20)
+            accept(SBUF("Savings: Could not load target balance"), INTERNAL_ERROR);
+
         if (slot_subfield(20, sfBalance, 20) != 20)
-            accept(SBUF("Savings: Could not load target balance 2"), __LINE__);
+            accept(SBUF("Savings: Could not load target balance 2"), INTERNAL_ERROR);
 
         if (DEBUG)
         {
@@ -133,18 +130,20 @@ int64_t hook(uint32_t r)
             TRACEVAR(balance);
     }
     
+    // HASH:
     uint8_t key[32];
     otxn_id(SBUF(key), 0);
 
+    // ATOMIC GET: Balance & PriorBalance
+    TRACEVAR(r);
     if (r == 0)
     {
         // we'll store this for the weak execution
-        
         if (DEBUG)
             trace_float(SBUF("before balance"), balance);
 
         if (state_set(&balance, sizeof(balance), SBUF(key)) != sizeof(balance))
-            accept(SBUF("Savings: state save failed due to low reserve, passing txn without emitting"), __LINE__);
+            accept(SBUF("Savings: state save failed due to low reserve, passing txn without emitting"), INTERNAL_ERROR);
 
         hook_again();
         accept(SBUF("Savings: requesting weak execution."), __LINE__);
@@ -152,9 +151,8 @@ int64_t hook(uint32_t r)
     else
     {
         // load the amount before exeuction
-
         if (state(&prior_balance, sizeof(prior_balance), SBUF(key)) != 8)
-            accept(SBUF("Savings: state load failed, passing txn without emitting"), __LINE__);
+            accept(SBUF("Savings: state load failed, passing txn without emitting"), INTERNAL_ERROR);
 
         if (DEBUG)
             TRACEVAR(prior_balance);
@@ -168,7 +166,7 @@ int64_t hook(uint32_t r)
         }
     }
 
-    // compute and normalize mutation
+    // VALIDATION: Math
     int64_t amount = float_sum(float_negate(balance), prior_balance);
     if (float_compare(amount, 0, COMPARE_LESS) == 1)
         amount = float_negate(amount);
@@ -176,29 +174,39 @@ int64_t hook(uint32_t r)
     if (DEBUG)
         trace_float(SBUF("balance mutation:"), amount);
 
+    // HOOK PARAM: XRPL Account
     uint8_t param_name[3] = {0x53U, 0x41U, 0};
     uint8_t kl[34];
     if (hook_param(SAVINGS_ACC, 20, param_name, 2) != 20)
         accept(SBUF("Savings: No account set"), __LINE__);
 
+    // KEYLET: Account Root
     util_keylet(SBUF(kl), KEYLET_ACCOUNT, SAVINGS_ACC, 20, 0,0,0,0);
 
     if (slot_set(SBUF(kl), 2) != 2)
         accept(SBUF("Savings: Dest account doesn't exist"), __LINE__);
 
-    // destination exists
+    // PARAM: Amount Native
+    // PARAM: Amount Outgoing
     param_name[1] = amount_native   ? 0x44U : 0x54U; // D / T
     param_name[2] = outgoing        ? 0x4FU : 0x49U; // O / I
 
     errmsg[33] = param_name[1];
     errmsg[34] = param_name[2];
 
+    // Hook PARAM: XRPL Account
     uint8_t threshold_raw[16];
+    int64_t result = hook_param(threshold_raw, 16, SBUF(param_name));
+    TRACEVAR(result);
     if (hook_param(threshold_raw, 16, SBUF(param_name)) != 16)
-        accept(SBUF(errmsg), __LINE__); 
-           
+    {
+        TRACEVAR(threshold_raw);
+        accept(SBUF(errmsg), __LINE__);
+    }
+
     uint64_t threshold = *((uint64_t*)threshold_raw);
-    
+
+    // VALIDATION: Math
     if (amount_native)
         threshold = float_mulratio(threshold, 1UL, 1UL, 1000000UL);
 
@@ -208,27 +216,25 @@ int64_t hook(uint32_t r)
         trace_float(SBUF("threshold"), threshold);
     }
 
+    // VALIDATION: Math
     if (float_compare(amount, threshold, COMPARE_LESS) == 1)
-        accept(SBUF("Savings: Threshold not met"), __LINE__); 
+        accept(SBUF("Savings: Threshold not met"), DOESNT_EXIST); 
 
     uint64_t percent =  *(((uint64_t*)(threshold_raw)) + 1);
 
     if (DEBUG)
         trace_num(SBUF("percent"), percent);
 
-    int64_t tosend_xfl =
-        float_multiply(amount, percent);
+    // VALIDATION: Math
+    int64_t tosend_xfl = float_multiply(amount, percent);
 
     if (tosend_xfl <= 0)
-        accept(SBUF("Savings: Skipping 0 / invalid send."), __LINE__);
+        accept(SBUF("Savings: Skipping 0 / invalid send."), NOT_AN_AMOUNT);
 
-    // savings thrshold met
-    etxn_reserve(1);
-
+    // VALIDATION: Trustline
     if (!amount_native)
     {
         // check if destination has a trustline for the currency
-
         // first generate the keylet
         if (
             util_keylet(SBUF(kl), KEYLET_LINE,
@@ -239,24 +245,25 @@ int64_t hook(uint32_t r)
         // then check it on the ledger
         slot_set(SBUF(kl), 3) != 3)
             accept(SBUF("Savings: Trustline missing on dest account"), __LINE__);
-
     }
 
-    // prepare the payment
-    uint32_t fls = (uint32_t)ledger_seq() + 1;
-    uint32_t lls = fls + 4 ;
+    // TXN: PREPARE: Init
+    etxn_reserve(1);
 
-    // fls
+    // TXN PREPARE: FirstLedgerSequence
+    uint32_t fls = (uint32_t)ledger_seq() + 1;
     *((uint32_t*)(FLS_OUT)) = FLIP_ENDIAN(fls);
 
-    // lls
+    // TXN PREPARE: LastLedgerSequense
+    uint32_t lls = fls + 4 ;
     *((uint32_t*)(LLS_OUT)) = FLIP_ENDIAN(lls);
 
-    // if they specified a destination tag then fill it
+    // TXN PREPARE: Dest Tag <- Source Tag
     param_name[1] = 'D';
     if (hook_param(DTAG_OUT, 4, param_name, 2) == 4)
         *(DTAG_OUT-1) = 0x2EU;
-        
+    
+    // TXN PREPARE: Amount
     if (amount_native)
     {
         uint64_t drops = float_int(tosend_xfl, 6, 1);
@@ -273,9 +280,10 @@ int64_t hook(uint32_t r)
     else
         float_sto(AMOUNT_OUT, 49, amount_buf + 8, 20, amount_buf + 28, 20, tosend_xfl, sfAmount);
     
+    // TXN PREPARE: Emit Metadata
     etxn_details(EMIT_OUT, 116U);
 
-    // fee
+    // TXN PREPARE: Fee
     {
         int64_t fee = etxn_fee_base(SBUF(txn));
         if (DEBUG)
@@ -291,7 +299,7 @@ int64_t hook(uint32_t r)
         *b++ = (fee >>  0) & 0xFFU;            
     }
 
-    // emit the transaction
+    // TXN: Emit/Send Txn
     uint8_t emithash[32];
     int64_t emit_result = emit(SBUF(emithash), SBUF(txn));
     if (emit_result > 0)
@@ -299,6 +307,7 @@ int64_t hook(uint32_t r)
    
     if (DEBUG)
         trace(SBUF("txnraw"), SBUF(txn), 1); 
+    
     return accept(SBUF("Savings: Emit unsuccessful"), __LINE__);
 }
 
