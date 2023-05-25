@@ -1,49 +1,7 @@
-#include "hookapi.h"
+#include "../utils/hookapi.h"
 #include <stdint.h>
 
 #define DEBUG 1
-
-#define SVAR(x) &x, sizeof(x)
-
-#define ASSERT(x)\
-{\
-    if (!(x))\
-        rollback(0,0,__LINE__);\
-}
-
-#define DONE(msg)\
-    accept(msg, sizeof(msg),__LINE__)
-
-// credit for date contribution algorithm: https://stackoverflow.com/a/42936293 (Howard Hinnant)
-#define SETUP_CURRENT_MONTH()\
-uint16_t current_month = 0;\
-{\
-    int64_t s = ledger_last_time() + 946684800;\
-    int64_t z = s / 86400 + 719468;\
-    int64_t era = (z >= 0 ? z : z - 146096) / 146097;\
-    uint64_t doe = (uint64_t)(z - era * 146097);\
-    uint64_t yoe = (doe - doe/1460 + doe/36524 - doe/146096) / 365;\
-    int64_t y = (int64_t)(yoe) + era * 400;\
-    uint64_t doy = doe - (365*yoe + yoe/4 - yoe/100);\
-    uint64_t mp = (5*doy + 2)/153;\
-    uint64_t d = doy - (153*mp+2)/5 + 1;\
-    uint64_t m = mp + (mp < 10 ? 3 : -9);\
-    y += (m <= 2);\
-    current_month = y * 12 + m;\
-    if (DEBUG) \
-    {\
-        TRACEVAR(y);\
-        TRACEVAR(m);\
-        TRACEVAR(d);\
-        TRACEVAR(current_month);\
-    }\
-}
-
-#define FLIP_ENDIAN(n) ((uint32_t) (((n & 0xFFU) << 24U) | \
-                                   ((n & 0xFF00U) << 8U) | \
-                                 ((n & 0xFF0000U) >> 8U) | \
-                                ((n & 0xFF000000U) >> 24U)))
-
 
 uint8_t txn[283] =
 {
@@ -68,64 +26,70 @@ uint8_t txn[283] =
 /*   0,283 */
 };
 
-/**
-    All integer values are marked for size and endianness
 
+/**
+ * 
     Direct Debit Hook
+        All integer values are marked for size and endianness
+        
         Parameter Name: <20 byte account ID of receiver>
         Parameter Value: 8 or 48 bytes
             <8 byte xfl LE allowance per month>
             [20 byte currency code, not present if xrp]
             [20 byte issuer code not present is xrp]
 **/
+
+// ACCOUNTS
+#define HOOK_ACC (txn + 125U)
+#define OTX_ACC (txn + 147U)
+
+// TXS
 #define FLS_OUT (txn + 20U)                                                                                            
 #define LLS_OUT (txn + 26U)                                                                                            
 #define DTAG_OUT (txn + 14U)                                                                                           
-#define AMOUNT_OUT (txn + 30U)                                                                                         
-#define HOOK_ACC (txn + 125U)                                                                                          
+#define AMOUNT_OUT (txn + 30U)                                                                                                                                                                                
 #define EMIT_OUT (txn + 167U)                                                                                          
-#define FEE_OUT (txn + 80U)  
-#define REQUESTER_ACC (txn + 147U)
+#define FEE_OUT (txn + 80U)
 
 int64_t hook(uint32_t r)
 {
     _g(1,1);
 
-    // pass anything that isn't a ttINVOKE
-    if (otxn_type() != 99)
+    // FILTER: Transation Type
+    if (otxn_type() != ttINVOKE)
+    {
         DONE("Direct debit: Passing non-Invoke txn");
+    }
 
-    // get the account id
-    otxn_field(REQUESTER_ACC, 20, sfAccount);
+    // ACCOUNT:
+    otxn_field(OTX_ACC, SFL_ACCOUNT, sfAccount);
+    hook_account(HOOK_ACC, SFL_ACCOUNT);
 
-    hook_account(HOOK_ACC, 20);
+    // GUARD ON: Destination
+    if (BUFFER_EQUAL_20(HOOK_ACC, OTX_ACC))
+        DONEMSG("Direct debit: Ignoring self-Invoke");
 
-    // if the account is the sender
-    if (BUFFER_EQUAL_20(HOOK_ACC, REQUESTER_ACC))
-        DONE("Direct debit: Ignoring self-Invoke");
-
-    uint8_t request_buf[48]; // < xlf 8b req amount, 20b currency, 20b issuer > 
+    // TX: PARAM -> REQAMT: < xlf 8b req amount, 20b currency, 20b issuer >
+    uint8_t request_buf[48];
     uint8_t request_key[6] = { 'R', 'E', 'Q', 'A', 'M', 'T' };
     if (otxn_param(SBUF(request_buf), SBUF(request_key)) < 8)
-        DONE("Direct debit: Passing Invoke that lacks REQAMT otxn parameter");
+        DONEMSG("Direct debit: Passing Invoke that lacks REQAMT otxn parameter");
 
+    // VALIDATION: Math
     int64_t request = *((int64_t*)request_buf);
-
     if (float_compare(request, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
         rollback(SBUF("Direct debit: Invalid REQAMT"), __LINE__);
 
-
-    // read in such that the currency alignment is met
+    // HOOK: PARAM -> AccountBast64: < xlf 8b req amount, 20b currency, 20b issuer >
     uint8_t limit_buf[48];
-    int64_t limit_native = hook_param(SBUF(limit_buf), REQUESTER_ACC, 20) == 8;
+    int64_t limit_native = hook_param(SBUF(limit_buf), OTX_ACC, SFL_ACCOUNT) == 8;
 
-    // check the limit is not zero (i.e., probably the key doesn't exist)
+    // TRUSTLINE:
     int64_t limit = *((int64_t*)limit_buf);
-
     if (limit == 0)
         rollback(SBUF("Direct debit: Requester is not authorized"), __LINE__);
 
-    // check the requested currency matches
+    // VALIDATION: Math
     {
         uint64_t* req_issue = request_buf + 8;
         uint64_t* amt_issue = limit_buf + 8;
@@ -138,15 +102,14 @@ int64_t hook(uint32_t r)
             rollback(SBUF("Direct debit: Requested currency/issuer differs from authorized currency/issuer"), __LINE__);
     }
 
+    // STATE: GET - AccountBast64: < xfl amount used 8b LE, month number 8b LE >
+    int64_t used[2];
+    state(SBUF(used), OTX_ACC, SFL_ACCOUNT); // if state() fails then used is 0 by default
+    
+    // CALENDAR:
+    SETUP_CURRENT_MONTH();
 
-    // grab the current state for this entry, if it exists, if it doesn't it's populated with 0
-    int64_t used[2]; // < xfl amount used 8b LE, month number 8b LE >
-    state(SBUF(used), REQUESTER_ACC, 20); // if state() fails then used is 0 by default
-
-    SETUP_CURRENT_MONTH(); // populates a uint16_t current_month variable
-
-
-    // reset if it's a new month
+    // VALIDATION: Math
     if (used[1] != current_month)
     {
         used[1] = current_month;
@@ -159,24 +122,23 @@ int64_t hook(uint32_t r)
         trace_float(SBUF("used[0]"), used[0]);
     }
 
-    // increment the counter
+    // VALIDATION: Math
     used[0] = float_sum(used[0], request);
     if (used[0] <= 0 || float_compare(limit, used[0], COMPARE_LESS) == 1)
         rollback(SBUF("Direct debit: Would exceed monthly limit"), __LINE__);
 
-    // prepare the txn
+    // TXN: PREPARE: Init
     etxn_reserve(1);
 
+    // TXN PREPARE: FirstLedgerSequence
     uint32_t fls = (uint32_t)ledger_seq() + 1;
-    uint32_t lls = fls + 4 ;
-
-    // fls
     *((uint32_t*)(FLS_OUT)) = FLIP_ENDIAN(fls);
 
-    // lls
+    // TXN PREPARE: LastLedgerSequense
+    uint32_t lls = fls + 4 ;
     *((uint32_t*)(LLS_OUT)) = FLIP_ENDIAN(lls);
 
-    // amount block
+    // TXN PREPARE: Amount
     if (limit_native)
     {
         uint64_t drops = float_int(request, 6, 1);
@@ -193,14 +155,14 @@ int64_t hook(uint32_t r)
     else
         float_sto(AMOUNT_OUT, 49, request_buf + 8, 20, request_buf + 28, 20, request, sfAmount);
 
-    // dest tag from source tag
+    // TXN PREPARE: Dest Tag <- Source Tag
     if (otxn_field(DTAG_OUT, 4, sfSourceTag) == 4)
         *(DTAG_OUT-1) = 0x2EU;
 
-    // emit details block
+    // TXN PREPARE: Emit Metadata
     etxn_details(EMIT_OUT, 116U);                                                                                      
                                                                                                                        
-    // fee                                                                                                             
+    // TXN PREPARE: Fee                                                                                                 
     {                                                                                                                  
         int64_t fee = etxn_fee_base(SBUF(txn));                                                                        
         if (DEBUG)                                                                                                     
@@ -216,19 +178,17 @@ int64_t hook(uint32_t r)
         *b++ = (fee >>  0) & 0xFFU;                                                                                    
     }  
 
-
     if (DEBUG)
         trace(SBUF("txnraw"), SBUF(txn), 1);
     
-    // emit the transaction
+    // TXN: Emit/Send Txn
     uint8_t emithash[32];
     int64_t emit_result = emit(SBUF(emithash), SBUF(txn));
     if (emit_result > 0)
     {
-        // save the state
-        state_set(SBUF(used), REQUESTER_ACC, 20);
+        // STATE: SET
+        state_set(SBUF(used), OTX_ACC, 20);
         accept(SBUF("Direct debit: Successfully emitted"), __LINE__);
     }
-
     return rollback(SBUF("Direct debit: Emit unsuccessful"), __LINE__);
 }

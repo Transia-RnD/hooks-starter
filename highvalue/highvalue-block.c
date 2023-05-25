@@ -1,4 +1,4 @@
-#include "hookapi.h"
+#include "../utils/hookapi.h"
 #include <stdint.h>
 
 #define LEDGER_DELAY 10
@@ -6,17 +6,17 @@
 
 #define DEBUG 1
 
-#define DONE(msg)\
-    return accept(msg, sizeof(msg),__LINE__)
-
 /**
     All integer values are marked for size and endianness
 
     High value Payments Block Hook
         Parameter Name: 485644 (HVD)
-        Parameter Value: <8 byte xfl of drops threshold to block LE>
+        Parameter Value: <8 byte big endian xfl of drops threshold to block LE>
         Parameter Name: 485654 (HVT)
-        Parameter Value: <8 byte xfl of trustline threshold to block LE>
+        Parameter Value: 48 bytes
+            <8 byte big endian amount>
+            [20 byte currency code, not present if xrp]
+            [20 byte issuer code not present is xrp]
 **/
 
 uint8_t drops_key[3] = {'H', 'V', 'D'};
@@ -27,34 +27,41 @@ int64_t hook(uint32_t r)
 {
     _g(1,1);
 
-    // pass anything that isn't a payment
-    if (otxn_type() != 0)
-        DONE("High value: Passing non-Payment txn");
+    // FILTER: Transation Type
+    if (otxn_type() != ttPAYMENT)
+        DONEMSG("High value: Passing non-Payment txn");
 
-    // get the account ids
-    uint8_t otxn_acc[20];
+    // ACCOUNT:
+    uint8_t otxn_acc[SFL_ACCOUNT];
     otxn_field(SBUF(otxn_acc), sfAccount);
 
-    uint8_t hook_acc[20];
+    // ACCOUNT:
+    uint8_t hook_acc[SFL_ACCOUNT];
     hook_account(SBUF(hook_acc));
 
-    // pass incoming txns
+    // FILTER: I/O
     if (!BUFFER_EQUAL_20(hook_acc, otxn_acc))
-        DONE("High value: Ignoring incoming Payment");
+        DONEMSG("High value: Ignoring incoming Payment");
 
     otxn_slot(1);
     slot_subfield(1, sfAmount, 2);
 
+    if (DEBUG)
+    {
+        trace_float(SBUF("amount"), slot_float(2));
+    }
+
+    // HOOK PARAM: <8 byte xfl of drops threshold to block LE>
     int64_t threshold;
     if (hook_param(&threshold, sizeof(threshold), slot_type(2, 1) == 1 ? drops_key : tl_key, 3) != sizeof(threshold))
-        DONE("High value: Passing outgoing Payment txn for which no threshold is set");
+        DONEMSG("High value: Passing outgoing Payment txn for which no threshold is set");
 
     if (DEBUG)
     {
         trace_float(SBUF("threshold"), threshold);
-        trace_float(SBUF("amount"), slot_float(2));
     }
 
+    // VALIDATION: Math
     if (float_compare(threshold, slot_float(2), COMPARE_LESS) == 1)
     {
         // check if they prepared for it
@@ -85,17 +92,19 @@ int64_t hook(uint32_t r)
         int64_t current_lgr = ledger_seq();
         int64_t prepare_lgr;
 
+        // STATE: Get
         if (state(&prepare_lgr, sizeof(prepare_lgr), SBUF(hash)) != sizeof(prepare_lgr))
-            rollback(SBUF("High value: Payment exceeds threshold. Use Invoke to send."), __LINE__);
-        
+            rollback(SBUF("High value: Payment exceeds threshold"), __LINE__);
+
+        // VALIDATION: Math
         if (current_lgr - prepare_lgr < LEDGER_DELAY)
-            rollback(SBUF("High value: Too soon, wait until "LEDGER_DELAY_STRING" ledgers have passed."), __LINE__);
+            rollback(SBUF("High value: Too soon, wait until "LEDGER_DELAY_STRING" ledgers have passed"), __LINE__);
 
-        // delete the state
-        state(0,0, SBUF(hash));
+        // STATE: Delete
+        state_set(0,0, SBUF(hash));
 
-        DONE("High value: Passing prepared high value txn");   
+        DONEMSG("High value: Passing prepared high value txn");   
     }
 
-    DONE("High value: Passing outgoing Payment less than threshold");
+    DONEMSG("High value: Passing outgoing Payment less than threshold");
 }
